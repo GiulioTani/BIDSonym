@@ -116,6 +116,7 @@ RUN apt-get update -qq \
            "deno" \
     && bash -c "source activate bidsonym \
     &&   python -m pip install --no-cache-dir  \
+             "matplotlib" \
              "tensorflow" \
              "scikit-image" \
              "pydeface==2.0.2" \
@@ -128,19 +129,20 @@ RUN apt-get update -qq \
     && rm -rf ~/.cache/pip/*
 RUN bash -c 'git config --global user.email bidsonym@example.com && git config --global user.name BIDSonym'
 RUN bash -c 'mkdir -p /opt/nobrainer/models && cd /opt/nobrainer/models && source activate bidsonym && datalad clone https://github.com/neuronets/trained-models && cd trained-models && git-annex enableremote osf-storage && datalad get -s osf-storage neuronets/brainy/0.1.0/weights/brain-extraction-unet-128iso-model.h5'
-RUN bash -c 'mkdir /home/mri-deface-detector && cd /home/mri-deface-detector && npm install sharp --unsafe-perm && npm install -g mri-deface-detector --unsafe-perm && cd ~'
+RUN bash -c 'mkdir -p /home/bidsonym/mri-deface-detector && cd /home/bidsonym/mri-deface-detector && npm install sharp --unsafe-perm && npm install -g mri-deface-detector --unsafe-perm && cd ~'
 RUN bash -c 'git clone https://github.com/miykael/gif_your_nifti && cd gif_your_nifti && source activate bidsonym && python setup.py install'
 COPY [".", \
-      "/home/bm"]
-RUN bash -c 'chmod a+x /home/bm/bidsonym/fs_data/mri_deface'
-RUN bash -c 'source activate bidsonym && cd /home/bm && pip install -e .'
-ENV IS_DOCKER="1"
+      "/home/bidsonym"]
+RUN bash -c 'chmod a+x /home/bidsonym/bidsonym/fs_data/mri_deface'
+RUN bash -c 'source activate bidsonym && cd /home/bidsonym && pip install -e .'
+RUN echo source activate bidsonym >> /home/bidsonym/.bashrc
+RUN echo "#!/bin/bash" > /neurodocker/startup.sh && echo "# Initialize conda for bash" >> /neurodocker/startup.sh && echo "eval \"\$(conda shell.bash hook)\"" >> /neurodocker/startup.sh && echo "conda activate bidsonym" >> /neurodocker/startup.sh && echo "exec bidsonym \"\$@\"" >> /neurodocker/startup.sh && chmod +x /neurodocker/startup.sh
 RUN apt-get update -qq \
            && apt-get install -y -q --no-install-recommends \
                   libopenblas-dev \
            && rm -rf /var/lib/apt/lists/*
 WORKDIR /tmp/
-ENTRYPOINT ["/neurodocker/startup.sh", "bidsonym"]
+ENTRYPOINT ["/neurodocker/startup.sh"]
 
 # Save specification to JSON.
 RUN printf '{ \
@@ -224,7 +226,7 @@ RUN printf '{ \
     { \
       "name": "run", \
       "kwds": { \
-        "command": "apt-get update -qq\\napt-get install -y -q --no-install-recommends \\\\\\n    bzip2 \\\\\\n    ca-certificates \\\\\\n    curl\\nrm -rf /var/lib/apt/lists/*\\n# Install dependencies.\\nexport PATH=\\"/opt/miniconda-latest/bin:$PATH\\"\\necho \\"Downloading Miniconda installer ...\\"\\nconda_installer=\\"/tmp/miniconda.sh\\"\\ncurl -fsSL -o \\"$conda_installer\\" https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh\\nbash \\"$conda_installer\\" -b -p /opt/miniconda-latest\\nrm -f \\"$conda_installer\\"\\nconda tos accept\\nconda update -yq -nbase conda\\n# Prefer packages in conda-forge\\nconda config --system --prepend channels conda-forge\\n# Packages in lower-priority channels not considered if a package with the same\\n# name exists in a higher priority channel. Can dramatically speed up installations.\\n# Conda recommends this as a default\\n# https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-channels.html\\nconda config --set channel_priority strict\\nconda config --system --set auto_update_conda false\\nconda config --system --set show_channel_urls true\\n# Enable `conda activate`\\nconda init bash\\nconda create -y  --name bidsonym\\nconda install -y  --name bidsonym \\\\\\n    \\"python=3.10\\" \\\\\\n    \\"numpy\\" \\\\\\n    \\"nipype\\" \\\\\\n    \\"nibabel\\" \\\\\\n    \\"pandas\\" \\\\\\n    \\"datalad\\" \\\\\\n    \\"deno\\"\\nbash -c \\"source activate bidsonym\\n  python -m pip install --no-cache-dir  \\\\\\n      \\"tensorflow\\" \\\\\\n      \\"scikit-image\\" \\\\\\n      \\"pydeface==2.0.2\\" \\\\\\n      \\"nobrainer==0.4.0\\" \\\\\\n      \\"quickshear==1.2.0\\" \\\\\\n      \\"datalad-osf\\" \\\\\\n      \\"pybids==0.16.4\\"\\"\\n# Clean up\\nsync && conda clean --all --yes && sync\\nrm -rf ~/.cache/pip/*" \
+        "command": "apt-get update -qq\\napt-get install -y -q --no-install-recommends \\\\\\n    bzip2 \\\\\\n    ca-certificates \\\\\\n    curl\\nrm -rf /var/lib/apt/lists/*\\n# Install dependencies.\\nexport PATH=\\"/opt/miniconda-latest/bin:$PATH\\"\\necho \\"Downloading Miniconda installer ...\\"\\nconda_installer=\\"/tmp/miniconda.sh\\"\\ncurl -fsSL -o \\"$conda_installer\\" https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh\\nbash \\"$conda_installer\\" -b -p /opt/miniconda-latest\\nrm -f \\"$conda_installer\\"\\nconda tos accept\\nconda update -yq -nbase conda\\n# Prefer packages in conda-forge\\nconda config --system --prepend channels conda-forge\\n# Packages in lower-priority channels not considered if a package with the same\\n# name exists in a higher priority channel. Can dramatically speed up installations.\\n# Conda recommends this as a default\\n# https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-channels.html\\nconda config --set channel_priority strict\\nconda config --system --set auto_update_conda false\\nconda config --system --set show_channel_urls true\\n# Enable `conda activate`\\nconda init bash\\nconda create -y  --name bidsonym\\nconda install -y  --name bidsonym \\\\\\n    \\"python=3.10\\" \\\\\\n    \\"numpy\\" \\\\\\n    \\"nipype\\" \\\\\\n    \\"nibabel\\" \\\\\\n    \\"pandas\\" \\\\\\n    \\"datalad\\" \\\\\\n    \\"deno\\"\\nbash -c \\"source activate bidsonym\\n  python -m pip install --no-cache-dir  \\\\\\n      \\"matplotlib\\" \\\\\\n      \\"tensorflow\\" \\\\\\n      \\"scikit-image\\" \\\\\\n      \\"pydeface==2.0.2\\" \\\\\\n      \\"nobrainer==0.4.0\\" \\\\\\n      \\"quickshear==1.2.0\\" \\\\\\n      \\"datalad-osf\\" \\\\\\n      \\"pybids==0.16.4\\"\\"\\n# Clean up\\nsync && conda clean --all --yes && sync\\nrm -rf ~/.cache/pip/*" \
       } \
     }, \
     { \
@@ -242,7 +244,7 @@ RUN printf '{ \
     { \
       "name": "run", \
       "kwds": { \
-        "command": "bash -c '"'"'mkdir /home/mri-deface-detector && cd /home/mri-deface-detector && npm install sharp --unsafe-perm && npm install -g mri-deface-detector --unsafe-perm && cd ~'"'"'" \
+        "command": "bash -c '"'"'mkdir -p /home/bidsonym/mri-deface-detector && cd /home/bidsonym/mri-deface-detector && npm install sharp --unsafe-perm && npm install -g mri-deface-detector --unsafe-perm && cd ~'"'"'" \
       } \
     }, \
     { \
@@ -256,27 +258,33 @@ RUN printf '{ \
       "kwds": { \
         "source": [ \
           ".", \
-          "/home/bm" \
+          "/home/bidsonym" \
         ], \
-        "destination": "/home/bm" \
+        "destination": "/home/bidsonym" \
       } \
     }, \
     { \
       "name": "run", \
       "kwds": { \
-        "command": "bash -c '"'"'chmod a+x /home/bm/bidsonym/fs_data/mri_deface'"'"'" \
+        "command": "bash -c '"'"'chmod a+x /home/bidsonym/bidsonym/fs_data/mri_deface'"'"'" \
       } \
     }, \
     { \
       "name": "run", \
       "kwds": { \
-        "command": "bash -c '"'"'source activate bidsonym && cd /home/bm && pip install -e .'"'"'" \
+        "command": "bash -c '"'"'source activate bidsonym && cd /home/bidsonym && pip install -e .'"'"'" \
       } \
     }, \
     { \
-      "name": "env", \
+      "name": "run", \
       "kwds": { \
-        "IS_DOCKER": "1" \
+        "command": "echo source activate bidsonym >> /home/bidsonym/.bashrc" \
+      } \
+    }, \
+    { \
+      "name": "run", \
+      "kwds": { \
+        "command": "echo \\"#!/bin/bash\\" > /neurodocker/startup.sh && echo \\"# Initialize conda for bash\\" >> /neurodocker/startup.sh && echo \\"eval \\\\\\"\\\\$\(conda shell.bash hook\)\\\\\\"\\" >> /neurodocker/startup.sh && echo \\"conda activate bidsonym\\" >> /neurodocker/startup.sh && echo \\"exec bidsonym \\\\\\"\\\\$@\\\\\\"\\" >> /neurodocker/startup.sh && chmod +x /neurodocker/startup.sh" \
       } \
     }, \
     { \
@@ -304,8 +312,7 @@ RUN printf '{ \
       "name": "entrypoint", \
       "kwds": { \
         "args": [ \
-          "/neurodocker/startup.sh", \
-          "bidsonym" \
+          "/neurodocker/startup.sh" \
         ] \
       } \
     } \
