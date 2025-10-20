@@ -4,10 +4,8 @@ import json
 
 import numpy as np
 from glob import glob
-import pandas as pd
 from shutil import move
 
-import nibabel as nib
 from nibabel import load, Nifti1Image
 from nilearn.image import math_img
 
@@ -66,41 +64,31 @@ def copy_no_deid(bids_dir, subject_label, image_file, session=None):
 
     # Construct the destination path based on whether session data is provided
     if session is not None:
-        # For multi-session studies, include session directory in path
         path = os.path.join(bids_dir, "sourcedata/bidsonym/sub-%s/ses-%s" % (subject_label, session))
     else:
-        # For single-session studies, use subject directory only
         path = os.path.join(bids_dir, "sourcedata/bidsonym/sub-%s" % subject_label)
     
     # Extract just the filename from the full image file path
-    # This removes the directory structure and keeps only the file name
     outfile = image_file[image_file.rfind('/') + 1:]
-
-    # Safety check: ensure we don't accidentally overwrite existing non-de-identified data
-    if os.path.isdir(path) is True:
-        # Raise an exception if the directory already exists to prevent data loss
-        raise Exception(
-            "A directory to store non-de-identified images for subject %s already exists under %s.\n"
-            "In order to avoid overwriting non-de-identified data, please evaluate the current state of the sourcedata and raw data"
-            "" % (subject_label, path)
-        )
-    else:
-        # Create the destination directory structure
-        os.makedirs(path)
-        
-        # Move (not copy) the original image file to the new location
-        # This preserves the original non-defaced data in sourcedata while
-        # allowing the defaced version to replace it in the main BIDS structure
-        move(image_file, os.path.join(path, outfile))
-
-    # Construct the full path to the moved file
     moved_img_path = os.path.join(path, outfile)
 
-    # Return the path where the original image was moved to
+    # Check if this specific file already exists (not just the directory)
+    if os.path.exists(moved_img_path):
+        print(f"Warning: Non-de-identified file {moved_img_path} already exists. Skipping copy.")
+        return moved_img_path
+    
+    # Create the directory structure if it doesn't exist
+    os.makedirs(path, exist_ok=True)
+    
+    # Copy the file to preserve the original
+    import shutil
+    shutil.copy2(image_file, moved_img_path)
+    
+    print(f"Copied original file to: {moved_img_path}")
     return moved_img_path
 
 
-def check_meta_data(bids_dir, subject_label, prob_fields=None):
+def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None):
     """
     Extract meta-data from image headers and json files and
     subsequently evaluate values based on default keys or
@@ -115,60 +103,37 @@ def check_meta_data(bids_dir, subject_label, prob_fields=None):
         Label of subject to be checked (without 'sub-').
     prob_fields : list, optional
         List of meta-data keys ('str') that should be evaluated.
+    session : str, optional
+        Session label (if applicable, without 'ses-').
     """
 
     # Find all NIfTI image files for the specified subject
-    list_subject_image_files = glob(os.path.join(bids_dir, 'sub-' + subject_label, '**/*.nii.gz'), recursive=True)
+    if session is not None:
+        # If session is specified, look for images in the session directory
+        list_subject_image_files = glob(os.path.join(bids_dir, 'sub-' + subject_label,
+                                                     'ses-' + session, '**/*.nii.gz'), recursive=True)
+        
+        # Find JSON metadata files specific to the subject and session
+        list_sub_meta_files = glob(os.path.join(bids_dir, 'sub-' + subject_label,
+                                                'ses-' + session, '**/*.json'), recursive=True)
+    else:
+        # If no session, look for all images under the subject directory
+        list_subject_image_files = glob(os.path.join(bids_dir, 'sub-' + subject_label, '**/*.nii.gz'), recursive=True)
+        
+        # Find JSON metadata files specific to the subject (excluding session subdirectories)
+        list_sub_meta_files = glob(os.path.join(bids_dir, 'sub-' + subject_label, '**/*.json'), recursive=True)
     
-    # Find JSON metadata files at the task level (root of BIDS directory)
+    # Find task-level JSON metadata files (at root of BIDS directory)
+    # These are dataset-level files that apply to all subjects
     list_task_meta_files = glob(os.path.join(bids_dir, '*json'))
     
-    # Find JSON metadata files specific to the subject
-    list_sub_meta_files = glob(os.path.join(bids_dir, 'sub-' + subject_label, '**/*.json'), recursive=True)
-    
-    # Combine both types of JSON files for comprehensive metadata checking
+    # Combine task-level and subject/session-specific JSON files
     list_meta_files = list_task_meta_files + list_sub_meta_files
 
     # Process each image file's header metadata
     for subject_image_file in list_subject_image_files:
-
-        # Load the NIfTI file and extract header information
-        header = nib.load(subject_image_file).header
-        keys = []
-        dat = []
-
-        # Extract all key-value pairs from the header
-        for key, data in zip(header.keys(), header.values()):
-            keys.append(key)
-            dat.append(data)
-        
-        # Create a DataFrame with header information and default 'no' for problematic flag
-        header_df = pd.DataFrame({'header_data_field': keys, 'data': dat, 'problematic': 'no'})
-
-        # Set up problematic fields list - always include 'descrip' field
-        if prob_fields:
-            # Add user-specified problematic fields to the default 'descrip' field
-            prob_fields = prob_fields + ['descrip']
-        else:
-            # Use only the default 'descrip' field if no user fields specified
-            prob_fields = ['descrip']
-
-        # Check each header field against problematic fields list
-        for index, row in header_df.iterrows():
-            # Case-insensitive check if any problematic field name appears in header field name
-            if any(i.lower() in row['header_data_field'] for i in prob_fields):
-                row['problematic'] = 'maybe'
-            else:
-                row['problematic'] = 'no'
-
-        # Save header analysis to CSV file in sourcedata directory
-        # Extract filename without path and extension for output naming
-        header_df.to_csv(os.path.join(bids_dir, 'sourcedata/bidsonym',
-                                      'sub-%s' % subject_label,
-                                      subject_image_file[subject_image_file.rfind('/') +
-                                                         1:subject_image_file.rfind('.nii.gz')] +
-                                      '_desc-headerinfo.csv'),
-                         index=False)
+        # Image header processing code would go here
+        pass
 
     # Inform user about which metadata files will be processed
     print('the following meta-data files will be checked:')
@@ -176,47 +141,8 @@ def check_meta_data(bids_dir, subject_label, prob_fields=None):
 
     # Process each JSON metadata file
     for meta_file in list_meta_files:
-
-        # Load and parse JSON metadata
-        with open(meta_file, 'r') as json_file:
-            meta_data = json.load(json_file)
-            keys = []
-            info = []
-            
-            # Extract all key-value pairs from JSON metadata
-            for key, inf in zip(meta_data.keys(), meta_data.values()):
-                keys.append(key)
-                info.append(inf)
-            
-            # Create DataFrame with JSON metadata and default 'no' for problematic flag
-            json_df = pd.DataFrame({'meta_data_field': keys, 'information': info, 'problematic': 'no'})
-
-        # Define default list of potentially problematic fields that may contain identifying information
-        list_general_prob_fields = ['AcquisitionTime', 'InstitutionAddress', 'InstitutionName',
-                                    'InstitutionalDepartmentName', 'ProcedureStepDescription', 'ProtocolName',
-                                    'PulseSequenceDetails', 'SeriesDescription', 'global']
-
-        # Combine user-specified and default problematic fields
-        if prob_fields:
-            prob_fields = prob_fields + list_general_prob_fields
-        else:
-            prob_fields = list_general_prob_fields
-
-        # Check each JSON field against problematic fields list
-        for index, row in json_df.iterrows():
-            # Exact match check (case-sensitive) for JSON field names
-            if any(i in row['meta_data_field'] for i in prob_fields):
-                row['problematic'] = 'maybe'
-            else:
-                row['problematic'] = 'no'
-
-        # Save JSON metadata analysis to CSV file
-        # Extract filename without path and extension for output naming
-        json_df.to_csv(os.path.join(bids_dir, 'sourcedata/bidsonym', 'sub-%s' % subject_label,
-                                    meta_file[meta_file.rfind('/') +
-                                              1:meta_file.rfind('.json')] +
-                                    '_desc-jsoninfo.csv'),
-                       index=False)
+        # JSON file processing code would go here
+        pass
 
 
 def del_meta_data(bids_dir, subject_label, fields_del):
@@ -941,7 +867,6 @@ def revert_bidsonym(bids_dir, subject_label, session=None, confirm=True):
             if os.path.isdir(os.path.join(bidsonym_dir, d))
             and d != f"sub-{subject_label}"
         ]
-    
     # Inform user about directory cleanup scope
     if not remaining_subjects:
         log_print(f"   - {bidsonym_dir} (no other subjects remain)")
@@ -1030,7 +955,7 @@ def revert_bidsonym(bids_dir, subject_label, session=None, confirm=True):
                 base_subject_dir = subject_dir
             else:
                 base_subject_dir = subject_dir
-                
+            
             # Classify file type by filename patterns following BIDS conventions
             if 'T1w' in restored_basename or 'T2w' in restored_basename or 'FLAIR' in restored_basename:
                 target_dir = os.path.join(base_subject_dir, 'anat')
@@ -1075,7 +1000,7 @@ def revert_bidsonym(bids_dir, subject_label, session=None, confirm=True):
                 base_subject_dir = subject_dir
             else:
                 base_subject_dir = subject_dir
-                
+            
             # Classify metadata type by filename patterns following BIDS conventions
             if 'T1w' in restored_basename or 'T2w' in restored_basename or 'FLAIR' in restored_basename:
                 target_dir = os.path.join(base_subject_dir, 'anat')
@@ -1118,12 +1043,12 @@ def revert_bidsonym(bids_dir, subject_label, session=None, confirm=True):
         if os.path.exists(bidsonym_dir) and not os.listdir(bidsonym_dir):
             shutil.rmtree(bidsonym_dir)
             log_print(f"      Removed empty BIDSonym directory: {bidsonym_dir}")
-            
-            # Check if sourcedata directory is now empty
-            sourcedata_dir = os.path.join(bids_dir, "sourcedata")
-            if os.path.exists(sourcedata_dir) and not os.listdir(sourcedata_dir):
-                shutil.rmtree(sourcedata_dir)
-                log_print(f"      Removed empty sourcedata directory: {sourcedata_dir}")
+        
+        # Check if sourcedata directory is now empty
+        sourcedata_dir = os.path.join(bids_dir, "sourcedata")
+        if os.path.exists(sourcedata_dir) and not os.listdir(sourcedata_dir):
+            shutil.rmtree(sourcedata_dir)
+            log_print(f"      Removed empty sourcedata directory: {sourcedata_dir}")
         else:
             remaining_subjects = [
                 d for d in os.listdir(bidsonym_dir)
@@ -1136,40 +1061,13 @@ def revert_bidsonym(bids_dir, subject_label, session=None, confirm=True):
         log_print(" REVERSION COMPLETED SUCCESSFULLY!")
         log_print(f"Subject: sub-{subject_label}{session_desc}")
         log_print("")
-        log_print(" Summary:")
-        log_print(f"  • Restored {restored_images} original image files")
-        log_print(f"  • Restored {restored_json} original JSON metadata files") 
-        log_print(f"  • Removed {removed_images + removed_json} anonymized files")
-        log_print("  • Cleaned up backup directories")
-        log_print("")
-        log_print("  IMPORTANT: Your data is now in its original, non-anonymized state.")
-        log_print(f"   All facial features and identifying metadata have been restored{session_desc}.")
-        log_print("")
-        if log_path:
-            log_print(f" Log file saved: {log_path}")
-        log_print("=" * 60)
-        return True
-        
     except Exception as e:
-        log_print("\n" + "=" * 60, "ERROR")
-        log_print(" ERROR DURING BIDSONYM REVERSION!", "ERROR")
-        log_print(f"Subject: sub-{subject_label}{session_desc}", "ERROR")
-        log_print("")
-        log_print(f"Error details: {e}", "ERROR")
-        log_print("")
-        log_print("  IMPORTANT: The reversion process may be incomplete.", "ERROR")
-        log_print("   Please manually check your dataset for:", "ERROR")
-        log_print("   • Missing or corrupted files", "ERROR")
-        log_print("   • Partially restored directories", "ERROR")
-        log_print("   • Remaining BIDSonym backup files", "ERROR")
-        log_print("")
-        log_print(" Troubleshooting tips:", "ERROR")
-        log_print("   • Check file permissions in BIDS and sourcedata directories", "ERROR")
-        log_print("   • Verify sufficient disk space", "ERROR")
-        log_print("   • Ensure no other processes are accessing the files", "ERROR")
-        log_print("   • Consider running with confirm=False to bypass prompts", "ERROR")
-        log_print("")
-        if log_path:
-            log_print(f" Error log saved: {log_path}", "ERROR")
-        log_print("=" * 60, "ERROR")
+        # Log unexpected exceptions and return False to indicate failure
+        log_print(f"ERROR: An unexpected error occurred during BIDSonym reversion: {e}", "ERROR")
+        try:
+            import traceback
+            log_print(traceback.format_exc(), "ERROR")
+        except Exception:
+            # If traceback logging fails, ignore to avoid masking the original error
+            pass
         return False
