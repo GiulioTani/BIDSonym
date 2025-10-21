@@ -953,4 +953,113 @@ def revert_bidsonym(bids_dir, subject_label, session=None, confirm=True):
                 relative_path = restored_basename
             
             # Determine target directory based on BIDS file naming conventions
-            # Use the base subject dir
+            # Parse the filename to understand the modality and construct proper path
+            if '_T1w.' in restored_basename:
+                modality_dir = 'anat'
+            elif '_T2w.' in restored_basename:
+                modality_dir = 'anat'
+            elif '_FLAIR.' in restored_basename:
+                modality_dir = 'anat'
+            elif '_func.' in restored_basename or '_task-' in restored_basename:
+                modality_dir = 'func'
+            elif '_dwi.' in restored_basename:
+                modality_dir = 'dwi'
+            else:
+                # Default to anat for anatomical images
+                modality_dir = 'anat'
+            
+            # Construct the full target path in the main BIDS structure
+            target_path = os.path.join(subject_dir, modality_dir, restored_basename)
+            
+            # Ensure the target directory exists
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            
+            try:
+                # Copy the original file back to its BIDS location
+                copy2(original_img, target_path)
+                restored_images += 1
+                log_print(f"      Restored: {restored_basename}")
+            except OSError as e:
+                log_print(f"       ERROR: Could not restore {restored_basename}: {e}", "ERROR")
+        
+        log_print(f"   Summary: Restored {restored_images} image files")
+        
+        # Step 3: Restore original JSON metadata files
+        log_print(f"\n STEP 3: Restoring original JSON metadata files{session_desc}...")
+        
+        # Initialize counter to track JSON restoration progress
+        restored_json = 0
+        
+        # Process each original JSON file found in sourcedata
+        for original_json in original_json_files:
+            # Remove the BIDSonym identifier to get the original BIDS filename
+            original_basename = os.path.basename(original_json)
+            restored_basename = original_basename.replace('_desc-nondeid', '')
+            
+            # Determine target directory based on associated image modality
+            if '_T1w.' in restored_basename or '_T2w.' in restored_basename or '_FLAIR.' in restored_basename:
+                modality_dir = 'anat'
+            elif '_func.' in restored_basename or '_task-' in restored_basename:
+                modality_dir = 'func'
+            elif '_dwi.' in restored_basename:
+                modality_dir = 'dwi'
+            else:
+                modality_dir = 'anat'  # Default
+            
+            # Construct the full target path
+            target_path = os.path.join(subject_dir, modality_dir, restored_basename)
+            
+            # Ensure the target directory exists
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            
+            try:
+                # Copy the original JSON file back to its BIDS location
+                copy2(original_json, target_path)
+                restored_json += 1
+                log_print(f"      Restored: {restored_basename}")
+            except OSError as e:
+                log_print(f"       ERROR: Could not restore {restored_basename}: {e}", "ERROR")
+        
+        log_print(f"   Summary: Restored {restored_json} JSON files")
+        
+        # Step 4: Clean up BIDSonym sourcedata directories
+        log_print(f"\n STEP 4: Cleaning up BIDSonym sourcedata{session_desc}...")
+        
+        try:
+            # Remove the subject-specific sourcedata directory
+            if os.path.exists(sourcedata_base_dir):
+                shutil.rmtree(sourcedata_base_dir)
+                log_print(f"   Removed: {sourcedata_base_dir}")
+            
+            # Check if we should remove the entire bidsonym directory
+            bidsonym_dir = os.path.join(bids_dir, "sourcedata", "bidsonym")
+            if os.path.exists(bidsonym_dir) and not os.listdir(bidsonym_dir):
+                # Directory is empty, remove it
+                os.rmdir(bidsonym_dir)
+                log_print(f"   Removed empty directory: {bidsonym_dir}")
+                
+                # Check if sourcedata directory is now empty
+                sourcedata_dir = os.path.join(bids_dir, "sourcedata")
+                if os.path.exists(sourcedata_dir) and not os.listdir(sourcedata_dir):
+                    os.rmdir(sourcedata_dir)
+                    log_print(f"   Removed empty directory: {sourcedata_dir}")
+                    
+        except OSError as e:
+            log_print(f"   WARNING: Could not fully clean up sourcedata: {e}", "WARNING")
+        
+        # Final success message
+        log_print(f"\n SUCCESS: BIDSonym reversion completed for subject {subject_label}{session_desc}!")
+        log_print("=" * 60)
+        log_print(" All original files have been restored to the main BIDS structure.")
+        log_print(" All BIDSonym-generated files and directories have been removed.")
+        log_print("=" * 60)
+        
+        return True
+        
+    except Exception as e:
+        # Handle any unexpected errors during the reversion process
+        log_print(f"\n ERROR: BIDSonym reversion failed for subject {subject_label}{session_desc}", "ERROR")
+        log_print(f"   Error details: {str(e)}", "ERROR")
+        log_print("   The dataset may be in an inconsistent state.", "ERROR")
+        log_print("   Please check the files manually and consider restoring from backup.", "ERROR")
+        return False
