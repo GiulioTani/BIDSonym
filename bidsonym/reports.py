@@ -486,3 +486,62 @@ def create_graphics(bids_dir, subject_label, session=None, modalities=['T1w']):
     # Execute the complete workflow
     report_wf.run()
     print("Graphics workflow completed successfully")
+
+
+def plot_defaced(image, mask, outfile, modalities=None):
+    """
+    Plot defaced image with before/after comparison.
+
+    Parameters
+    ----------
+    image : str
+        Path to original image.
+    mask : str
+        Path to defaced/masked image.
+    outfile : str
+        Path for output plot.
+    modalities : list, optional
+        List of modalities being processed (for labeling).
+    """
+    
+    # Import required modules within function for Nipype compatibility
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from nibabel import load
+    
+    # Load images
+    orig_img = load(image)
+    defaced_img = load(mask)
+    
+    # Get middle slice for visualization
+    orig_data = orig_img.get_fdata()
+    defaced_data = defaced_img.get_fdata()
+    
+    # Find middle slice in sagittal view (good for seeing face removal)
+    mid_slice = orig_data.shape[0] // 2
+    
+    # Create side-by-side comparison plot
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
+    
+    # Plot original image
+    ax1.imshow(np.rot90(orig_data[mid_slice, :, :]), cmap='gray')
+    ax1.set_title('Original')
+    ax1.axis('off')
+    
+    # Plot defaced image
+    ax2.imshow(np.rot90(defaced_data[mid_slice, :, :]), cmap='gray')
+    ax2.set_title('Defaced')
+    ax2.axis('off')
+    
+    # Add modality info to title if provided
+    if modalities:
+        fig.suptitle(f'Defacing Results - {", ".join(modalities)}')
+    else:
+        fig.suptitle('Defacing Results')
+    
+    # Save the plot
+    plt.tight_layout()
+    plt.savefig(outfile, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    return outfile

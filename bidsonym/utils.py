@@ -566,9 +566,13 @@ def deface_image(image, warped_mask, outfile):
     outfile: str
         Name of the defaced file.
     """
-
-    # functionality copied from pydeface
     
+    # Import all required modules within the function
+    # This is necessary when the function is used as a Nipype Function node
+    import numpy as np
+    from nibabel import load, Nifti1Image
+    from nilearn.image import math_img
+
     # Load the input image and the warped mask image
     infile_img = load(image)
     warped_mask_img = load(warped_mask)
@@ -584,20 +588,19 @@ def deface_image(image, warped_mask, outfile):
     except ValueError:
         # Handle cases where image dimensions don't match
         # This typically happens with multi-volume/4D images
-        
+
         # Create a stack of mask data to match the last dimension of the input image
         # This replicates the 3D mask across all volumes in a 4D image
         tmpdata = np.stack([warped_mask_img.get_fdata()] *
                            infile_img.get_fdata().shape[-1], axis=-1)
         
         # Apply the replicated mask to all volumes
-        # Note: There's a typo here - should be get_fdata() not fget_data()
-        outdata = infile_img.fget_data() * tmpdata
+        outdata = infile_img.get_fdata() * tmpdata
 
     # Create a new NIfTI image with the defaced data
     # Preserve the original image's spatial transformation (affine) and metadata (header)
-    masked_brain = Nifti1Image(outdata, infile_img._affine,
-                               infile_img._header)
+    masked_brain = Nifti1Image(outdata, infile_img.affine,
+                               infile_img.header)
     
     # Save the defaced image to the specified output file
     masked_brain.to_filename(outfile)
@@ -950,124 +953,4 @@ def revert_bidsonym(bids_dir, subject_label, session=None, confirm=True):
                 relative_path = restored_basename
             
             # Determine target directory based on BIDS file naming conventions
-            # Use the base subject directory (which may include session)
-            if session is not None:
-                base_subject_dir = subject_dir
-            else:
-                base_subject_dir = subject_dir
-            
-            # Classify file type by filename patterns following BIDS conventions
-            if 'T1w' in restored_basename or 'T2w' in restored_basename or 'FLAIR' in restored_basename:
-                target_dir = os.path.join(base_subject_dir, 'anat')
-                modality = "anatomical"
-            elif 'bold' in restored_basename:
-                target_dir = os.path.join(base_subject_dir, 'func')
-                modality = "functional"
-            elif 'dwi' in restored_basename:
-                target_dir = os.path.join(base_subject_dir, 'dwi')
-                modality = "diffusion"
-            else:
-                # Default to anat directory for unknown/unclassified image types
-                target_dir = os.path.join(base_subject_dir, 'anat')
-                modality = "anatomical (default)"
-            
-            # Create target directory if it doesn't exist (handles new directory structure)
-            os.makedirs(target_dir, exist_ok=True)
-            
-            # Copy the original file back to its proper BIDS location
-            target_path = os.path.join(target_dir, restored_basename)
-            copy2(original_img, target_path)
-            restored_images += 1
-            log_print(f"      Restored {modality}: {restored_basename}")
-        
-        log_print(f"   Summary: Restored {restored_images} original image files")
-        
-        # Step 3: Restore original JSON metadata files
-        log_print(f"\n STEP 3: Restoring original JSON metadata files{session_desc}...")
-        log_print("   Restoring non-de-identified metadata")
-        
-        # Initialize counter to track JSON restoration progress
-        restored_json = 0
-        
-        # Process each original JSON file found in sourcedata
-        for original_json in original_json_files:
-            # Determine the target path by removing the 'desc-nondeid' identifier
-            original_basename = os.path.basename(original_json)
-            restored_basename = original_basename.replace('_desc-nondeid', '')
-            
-            # Determine target directory (same logic as images)
-            if session is not None:
-                base_subject_dir = subject_dir
-            else:
-                base_subject_dir = subject_dir
-            
-            # Classify metadata type by filename patterns following BIDS conventions
-            if 'T1w' in restored_basename or 'T2w' in restored_basename or 'FLAIR' in restored_basename:
-                target_dir = os.path.join(base_subject_dir, 'anat')
-                metadata_type = "anatomical"
-            elif 'bold' in restored_basename:
-                target_dir = os.path.join(base_subject_dir, 'func')
-                metadata_type = "functional"
-            elif 'dwi' in restored_basename:
-                target_dir = os.path.join(base_subject_dir, 'dwi')
-                metadata_type = "diffusion"
-            else:
-                # Check if it's a task-level JSON (should go to BIDS root)
-                if original_basename.startswith('task-'):
-                    target_dir = bids_dir
-                    metadata_type = "task-level"
-                else:
-                    target_dir = os.path.join(base_subject_dir, 'anat')
-                    metadata_type = "anatomical (default)"
-            
-            # Create target directory if it doesn't exist
-            os.makedirs(target_dir, exist_ok=True)
-            
-            # Copy the original file back to its proper location
-            target_path = os.path.join(target_dir, restored_basename)
-            copy2(original_json, target_path)
-            restored_json += 1
-            log_print(f"      Restored {metadata_type} metadata: {restored_basename}")
-        
-        log_print(f"   Summary: Restored {restored_json} original JSON metadata files")
-        
-        # Step 4: Remove the entire BIDSonym sourcedata directory structure
-        log_print("\n STEP 4: Cleaning up BIDSonym backup directories...")
-        
-        # Remove the subject's BIDSonym directory
-        shutil.rmtree(sourcedata_base_dir)
-        log_print(f"      Removed subject backup directory: {sourcedata_base_dir}")
-        
-        # Check if the parent sourcedata/bidsonym directory is now empty
-        bidsonym_dir = os.path.join(bids_dir, "sourcedata", "bidsonym")
-        if os.path.exists(bidsonym_dir) and not os.listdir(bidsonym_dir):
-            shutil.rmtree(bidsonym_dir)
-            log_print(f"      Removed empty BIDSonym directory: {bidsonym_dir}")
-        
-        # Check if sourcedata directory is now empty
-        sourcedata_dir = os.path.join(bids_dir, "sourcedata")
-        if os.path.exists(sourcedata_dir) and not os.listdir(sourcedata_dir):
-            shutil.rmtree(sourcedata_dir)
-            log_print(f"      Removed empty sourcedata directory: {sourcedata_dir}")
-        else:
-            remaining_subjects = [
-                d for d in os.listdir(bidsonym_dir)
-                if os.path.isdir(os.path.join(bidsonym_dir, d))
-            ]
-            log_print(f"      BIDSonym directory retained ({len(remaining_subjects)} other subjects remain)")
-        
-        # Final success message with summary
-        log_print("\n" + "=" * 60)
-        log_print(" REVERSION COMPLETED SUCCESSFULLY!")
-        log_print(f"Subject: sub-{subject_label}{session_desc}")
-        log_print("")
-    except Exception as e:
-        # Log unexpected exceptions and return False to indicate failure
-        log_print(f"ERROR: An unexpected error occurred during BIDSonym reversion: {e}", "ERROR")
-        try:
-            import traceback
-            log_print(traceback.format_exc(), "ERROR")
-        except Exception:
-            # If traceback logging fails, ignore to avoid masking the original error
-            pass
-        return False
+            # Use the base subject dir
