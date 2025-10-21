@@ -1,15 +1,10 @@
 # Import all required modules at the top
 import os
 from datetime import datetime
-from glob import glob
-from os.path import join as opj
-from shutil import move
 
 import nipype.pipeline.engine as pe
 from nipype import Function
 from nipype.interfaces import utility as niu
-from bids import BIDSLayout
-import gif_your_nifti.core as gif2nif
 
 
 def setup_logging(bids_dir, subject_label, session=None, 
@@ -282,12 +277,23 @@ def gif_defaced(bids_dir, subject_label, session=None, t2w=None):
     directory and then moved to the BIDSonym sourcedata directory for
     organization and storage.
     """
+    
+    # Import required modules within function for Nipype compatibility
+    import os
+    from glob import glob
+    from os.path import join as opj
+    from shutil import move
+    from bids import BIDSLayout
+    import gif_your_nifti.core as gif2nif
 
     # Initialize BIDS layout to query dataset structure
     layout = BIDSLayout(bids_dir)
     
     # Define path to BIDSonym sourcedata directory for this subject
-    bidsonym_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}')
+    if session is not None:
+        bidsonym_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/ses-{session}')
+    else:
+        bidsonym_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}')
 
     # Query for T1w images based on session specification
     if session is not None:
@@ -309,6 +315,8 @@ def gif_defaced(bids_dir, subject_label, session=None, t2w=None):
                 return_type='filename', 
                 session=session
             )
+        else:
+            defaced_t2w = []
     else:
         # Get all T1w images for subject (all sessions)
         defaced_t1w = layout.get(
@@ -319,26 +327,31 @@ def gif_defaced(bids_dir, subject_label, session=None, t2w=None):
         )
         
         # Get all T2w images for subject if requested
-        # Note: There's an inconsistency here - session parameter is passed even when session is None
         if t2w is not None:
             defaced_t2w = layout.get(
                 subject=subject_label, 
                 extension='nii.gz', 
                 suffix='T2w',
-                return_type='filename', 
-                session=session  # This should probably be removed when session is None
+                return_type='filename'
             )
+        else:
+            defaced_t2w = []
 
     # Generate GIFs for all T1w images found
     for t1_image in defaced_t1w:
-        # Create animated GIF showing slices through the T1w image
-        gif2nif.write_gif_normal(t1_image)
+        try:
+            # Create animated GIF showing slices through the T1w image
+            gif2nif.write_gif_normal(t1_image)
+        except Exception as e:
+            print(f"Warning: Could not create GIF for {t1_image}: {e}")
 
     # Generate GIFs for T2w images if requested
-    if t2w is not None:
-        for t2_image in defaced_t2w:
+    for t2_image in defaced_t2w:
+        try:
             # Create animated GIF showing slices through the T2w image
             gif2nif.write_gif_normal(t2_image)
+        except Exception as e:
+            print(f"Warning: Could not create GIF for {t2_image}: {e}")
 
     # Locate and move generated GIF files to BIDSonym directory
     if session is not None:
@@ -348,7 +361,6 @@ def gif_defaced(bids_dir, subject_label, session=None, t2w=None):
             f'sub-{subject_label}/ses-{session}/anat',
             f'sub-{subject_label}*.gif'
         )
-        list_gifs = glob(gif_search_path)
     else:
         # Look for GIFs in subject's anatomical directory
         gif_search_path = opj(
@@ -356,12 +368,24 @@ def gif_defaced(bids_dir, subject_label, session=None, t2w=None):
             f'sub-{subject_label}/anat',
             f'sub-{subject_label}*.gif'
         )
-        list_gifs = glob(gif_search_path)
+    
+    list_gifs = glob(gif_search_path)
+
+    # Ensure the bidsonym directory exists
+    os.makedirs(bidsonym_path, exist_ok=True)
 
     # Move all generated GIF files to BIDSonym sourcedata directory
     for gif_file in list_gifs:
-        # Move GIF from original location to organized sourcedata location
-        move(gif_file, bidsonym_path)
+        try:
+            # Move GIF from original location to organized sourcedata location
+            move(gif_file, bidsonym_path)
+            print(f"Moved GIF: {os.path.basename(gif_file)} to {bidsonym_path}")
+        except Exception as e:
+            print(f"Warning: Could not move GIF file {gif_file}: {e}")
+
+    print(f"GIF generation completed for subject {subject_label}")
+    if session:
+        print(f"Session: {session}")
 
 
 def create_graphics(bids_dir, subject_label, session=None, modalities=['T1w']):
