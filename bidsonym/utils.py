@@ -88,7 +88,7 @@ def copy_no_deid(bids_dir, subject_label, image_file, session=None):
     return moved_img_path
 
 
-def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None):
+def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None, modalities=None):
     """
     Extract meta-data from image headers and json files and
     subsequently evaluate values based on default keys or
@@ -105,39 +105,109 @@ def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None):
         List of meta-data keys ('str') that should be evaluated.
     session : str, optional
         Session label (if applicable, without 'ses-').
+    modalities : list, optional
+        List of modalities to process (e.g., ['T1w', 'T2w', 'FLAIR']).
     """
-
-    # Find all NIfTI image files for the specified subject
-    if session is not None:
-        # If session is specified, look for images in the session directory
-        list_subject_image_files = glob(os.path.join(bids_dir, 'sub-' + subject_label,
-                                                     'ses-' + session, '**/*.nii.gz'), recursive=True)
-        
-        # Find JSON metadata files specific to the subject and session
-        list_sub_meta_files = glob(os.path.join(bids_dir, 'sub-' + subject_label,
-                                                'ses-' + session, '**/*.json'), recursive=True)
-    else:
-        # If no session, look for all images under the subject directory
-        list_subject_image_files = glob(os.path.join(bids_dir, 'sub-' + subject_label, '**/*.nii.gz'), recursive=True)
-        
-        # Find JSON metadata files specific to the subject (excluding session subdirectories)
-        list_sub_meta_files = glob(os.path.join(bids_dir, 'sub-' + subject_label, '**/*.json'), recursive=True)
     
-    # Find task-level JSON metadata files (at root of BIDS directory)
-    # These are dataset-level files that apply to all subjects
-    list_task_meta_files = glob(os.path.join(bids_dir, '*json'))
+    import os
+    from glob import glob
+    from bids import BIDSLayout
     
-    # Combine task-level and subject/session-specific JSON files
+    # Initialize BIDS layout for structured querying
+    layout = BIDSLayout(bids_dir)
+    
+    # Default modalities if none specified
+    if modalities is None:
+        modalities = ['T1w']
+    
+    # Find NIfTI image files for the specified subject, session, and modalities
+    list_subject_image_files = []
+    list_sub_meta_files = []
+    
+    for modality in modalities:
+        # Query BIDS layout for specific subject, session, and modality
+        if session is not None:
+            # Get images for specific session and modality
+            images = layout.get(
+                subject=subject_label,
+                session=session,
+                suffix=modality,
+                extension='nii.gz',
+                return_type='filename'
+            )
+            # Get JSON files for specific session and modality
+            json_files = layout.get(
+                subject=subject_label,
+                session=session,
+                suffix=modality,
+                extension='json',
+                return_type='filename'
+            )
+        else:
+            # Get images for all sessions of this subject and modality
+            images = layout.get(
+                subject=subject_label,
+                suffix=modality,
+                extension='nii.gz',
+                return_type='filename'
+            )
+            # Get JSON files for all sessions of this subject and modality
+            json_files = layout.get(
+                subject=subject_label,
+                suffix=modality,
+                extension='json',
+                return_type='filename'
+            )
+        
+        list_subject_image_files.extend(images)
+        list_sub_meta_files.extend(json_files)
+    
+    # Find dataset-level JSON metadata files (at root of BIDS directory)
+    # Only include task-level files that are relevant to the modalities being processed
+    list_task_meta_files = []
+    for modality in modalities:
+        if modality in ['bold', 'func']:
+            # For functional data, include task JSON files
+            task_files = glob(os.path.join(bids_dir, 'task-*_bold.json'))
+            list_task_meta_files.extend(task_files)
+        else:
+            # For anatomical data, check for modality-specific dataset files
+            dataset_files = glob(os.path.join(bids_dir, f'*_{modality}.json'))
+            list_task_meta_files.extend(dataset_files)
+    
+    # Combine dataset-level and subject/session-specific JSON files
     list_meta_files = list_task_meta_files + list_sub_meta_files
+    
+    # Remove duplicates while preserving order
+    list_meta_files = list(dict.fromkeys(list_meta_files))
+    
+    # Only proceed if we found relevant files
+    if not list_subject_image_files:
+        print(f'No {modalities} images found for subject {subject_label}')
+        if session:
+            print(f'in session {session}')
+        return
+    
+    if not list_meta_files:
+        print(f'No JSON metadata files found for subject {subject_label}')
+        if session:
+            print(f'in session {session}')
+        print(f'and modalities {modalities}')
+        return
+    
+    # Inform user about which files will be processed
+    print(f'Found {len(list_subject_image_files)} image files for processing:')
+    for img_file in list_subject_image_files:
+        print(f'  {os.path.basename(img_file)}')
+    
+    print(f'\nThe following {len(list_meta_files)} metadata files will be checked:')
+    for meta_file in list_meta_files:
+        print(f'  {os.path.basename(meta_file)}')
 
     # Process each image file's header metadata
     for subject_image_file in list_subject_image_files:
         # Image header processing code would go here
         pass
-
-    # Inform user about which metadata files will be processed
-    print('the following meta-data files will be checked:')
-    print(*list_meta_files, sep='\n')
 
     # Process each JSON metadata file
     for meta_file in list_meta_files:
@@ -235,46 +305,60 @@ def del_meta_data(bids_dir, subject_label, fields_del):
 
 def rename_non_deid(bids_dir, subject_label):
     """
-    Rename original non-defaced images and meta-data json files
-    to add respective identifier ('desc-nondeid').
-
+    Rename non-deidentified files to include descriptive labels.
+    
     Parameters
     ----------
     bids_dir : str
         Path to BIDS root directory.
     subject_label : str
-        Label of subject to be renamed (without 'sub-').
+        Label of subject (without 'sub-').
     """
-
-    # Find all JSON metadata files in the subject's backup directory
-    # Exclude files that already have the 'desc-nondeid' identifier to prevent double-processing
-    list_meta_files = [fn for fn in glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-'
-                       + subject_label, '*json')) if not os.path.basename(fn).endswith('desc-nondeid.json')]
     
-    # Find all NIfTI image files in the subject's backup directory
-    # Exclude files that already have the 'desc-nondeid' identifier to prevent double-processing
-    list_images_files = [fn for fn in glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-'
-                         + subject_label, '*nii.gz')) if not os.path.basename(fn).endswith('desc-nondeid.nii.gz')]
-
-    # Rename all JSON metadata files to include the 'desc-nondeid' identifier
-    for meta_data_file in list_meta_files:
-        # Extract filename without extension and add the non-de-identified descriptor
-        # This clearly marks these files as containing original, non-anonymized metadata
-        meta_deid = meta_data_file[meta_data_file.rfind('/') +
-                                   1:meta_data_file.rfind('.json')] + '_desc-nondeid.json'
+    import os
+    from glob import glob
+    
+    # Define the base sourcedata path for this subject
+    sourcedata_base = os.path.join(bids_dir, "sourcedata", "bidsonym", f"sub-{subject_label}")
+    
+    if not os.path.exists(sourcedata_base):
+        print(f"No sourcedata found for subject {subject_label}")
+        return
+    
+    # Find all NIfTI and JSON files recursively in the subject's sourcedata directory
+    # This will catch files in both session directories and subject root
+    nifti_files = glob(os.path.join(sourcedata_base, "**", "*.nii.gz"), recursive=True)
+    json_files = glob(os.path.join(sourcedata_base, "**", "*.json"), recursive=True)
+    
+    all_files = nifti_files + json_files
+    
+    print(f"Found {len(all_files)} files to rename for subject {subject_label}")
+    
+    # Rename each file to include the _desc-nondeid identifier
+    for file_path in all_files:
+        # Skip files that already have the descriptor
+        if '_desc-nondeid' in file_path:
+            continue
+            
+        # Get the directory and filename
+        file_dir = os.path.dirname(file_path)
+        filename = os.path.basename(file_path)
         
-        # Perform the rename operation in the same directory
-        os.rename(meta_data_file, os.path.join(bids_dir, 'sourcedata/bidsonym/sub-' + subject_label, meta_deid))
-
-    # Rename all NIfTI image files to include the 'desc-nondeid' identifier
-    for image_file in list_images_files:
-        # Extract filename without extension and add the non-de-identified descriptor
-        # This clearly marks these files as containing original, non-defaced brain images
-        image_deid = image_file[image_file.rfind('/') +
-                                1:image_file.rfind('.nii.gz')] + '_desc-nondeid.nii.gz'
+        # Insert _desc-nondeid before the file extension
+        if filename.endswith('.nii.gz'):
+            new_filename = filename.replace('.nii.gz', '_desc-nondeid.nii.gz')
+        elif filename.endswith('.json'):
+            new_filename = filename.replace('.json', '_desc-nondeid.json')
+        else:
+            continue  # Skip files with unexpected extensions
         
-        # Perform the rename operation in the same directory
-        os.rename(image_file, os.path.join(bids_dir, 'sourcedata/bidsonym/sub-' + subject_label, image_deid))
+        new_file_path = os.path.join(file_dir, new_filename)
+        
+        try:
+            os.rename(file_path, new_file_path)
+            print(f"Renamed: {filename} -> {new_filename}")
+        except OSError as e:
+            print(f"Error renaming {filename}: {e}")
 
 
 def brain_extraction_nb(image, subject_label, bids_dir):

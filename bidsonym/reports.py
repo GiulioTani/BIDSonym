@@ -103,7 +103,7 @@ def setup_logging(bids_dir, subject_label, session=None,
         return log_print, None
 
 
-def plot_defaced(bids_dir, subject_label, session=None, t2w=None):
+def plot_brainmask_overlay(bids_dir, subject_label, session=None, t2w=None):
     """
     Plot brainmask created from original non-defaced image on defaced image
     to evaluate defacing performance.
@@ -395,20 +395,6 @@ def create_graphics(bids_dir, subject_label, session=None, modalities=['T1w']):
     The workflow uses Nipype for pipeline management, ensuring reproducible
     execution and proper dependency handling. Both static plots and GIF
     generation are enabled by default.
-
-    Examples
-    --------
-    # Process only T1w images (default)
-    create_graphics('/data/bids', 'sub001')
-    
-    # Process T1w and T2w images
-    create_graphics('/data/bids', 'sub001', modalities=['T1w', 'T2w'])
-    
-    # Process only FLAIR images
-    create_graphics('/data/bids', 'sub001', modalities=['FLAIR'])
-    
-    # Process all modalities for specific session
-    create_graphics('/data/bids', 'sub001', session='01', modalities=['T1w', 'T2w', 'FLAIR'])
     """
 
     # Validate modalities parameter
@@ -432,35 +418,44 @@ def create_graphics(bids_dir, subject_label, session=None, modalities=['T1w']):
         name='inputnode'
     )
     
-    # Create node for static plot generation
-    plt_defaced = pe.Node(
+    # Create node for brain mask overlay plots
+    plt_brainmask = pe.Node(
         Function(
-            input_names=['bids_dir', 'subject_label', 'session', 'modalities'],
-            function=plot_defaced
+            input_names=['bids_dir', 'subject_label', 'session', 't2w'],
+            output_names=['t1w_files', 't2w_flag'],
+            function=plot_brainmask_overlay
         ),
-        name='plt_defaced'
+        name='plt_brainmask'
+    )
+    
+    # Create node for before/after comparison plots
+    plt_comparison = pe.Node(
+        Function(
+            input_names=['image', 'mask', 'outfile', 'bids_dir'],
+            output_names=['out_file'],
+            function=plot_defaced_comparison
+        ),
+        name='plt_comparison'
     )
     
     # Create node for GIF generation
     gf_defaced = pe.Node(
         Function(
-            input_names=['bids_dir', 'subject_label', 'session', 'modalities'],
+            input_names=['bids_dir', 'subject_label', 'session', 't2w'],
             function=gif_defaced
         ),
         name='gf_defaced'
     )
 
-    # Connect mandatory inputs (bids_dir, subject_label, and modalities are always required)
+    # Connect inputs for brain mask overlay plots
     report_wf.connect([
-        (inputnode, plt_defaced, [
+        (inputnode, plt_brainmask, [
             ('bids_dir', 'bids_dir'),
-            ('subject_label', 'subject_label'),
-            ('modalities', 'modalities')
+            ('subject_label', 'subject_label')
         ]),
         (inputnode, gf_defaced, [
             ('bids_dir', 'bids_dir'),
-            ('subject_label', 'subject_label'),
-            ('modalities', 'modalities')
+            ('subject_label', 'subject_label')
         ]),
     ])
 
@@ -468,9 +463,14 @@ def create_graphics(bids_dir, subject_label, session=None, modalities=['T1w']):
     if session:
         inputnode.inputs.session = session
         report_wf.connect([
-            (inputnode, plt_defaced, [('session', 'session')]),
+            (inputnode, plt_brainmask, [('session', 'session')]),
             (inputnode, gf_defaced, [('session', 'session')]),
         ])
+
+    # Set t2w parameter based on modalities
+    t2w_requested = any(mod in ['T2w', 'FLAIR'] for mod in valid_modalities)
+    plt_brainmask.inputs.t2w = t2w_requested if t2w_requested else None
+    gf_defaced.inputs.t2w = t2w_requested if t2w_requested else None
 
     # Set all workflow inputs
     inputnode.inputs.bids_dir = bids_dir
@@ -488,7 +488,7 @@ def create_graphics(bids_dir, subject_label, session=None, modalities=['T1w']):
     print("Graphics workflow completed successfully")
 
 
-def plot_defaced(image, mask, outfile, modalities=None):
+def plot_defaced_comparison(image, mask, outfile, bids_dir=None):
     """
     Plot defaced image with before/after comparison.
 
@@ -500,8 +500,8 @@ def plot_defaced(image, mask, outfile, modalities=None):
         Path to defaced/masked image.
     outfile : str
         Path for output plot.
-    modalities : list, optional
-        List of modalities being processed (for labeling).
+    bids_dir : str, optional
+        Path to BIDS root directory (for logging purposes).
     """
     
     # Import required modules within function for Nipype compatibility
@@ -513,7 +513,7 @@ def plot_defaced(image, mask, outfile, modalities=None):
     orig_img = load(image)
     defaced_img = load(mask)
     
-    # Get middle slice for visualization
+    # Get data arrays
     orig_data = orig_img.get_fdata()
     defaced_data = defaced_img.get_fdata()
     
@@ -533,11 +533,8 @@ def plot_defaced(image, mask, outfile, modalities=None):
     ax2.set_title('Defaced')
     ax2.axis('off')
     
-    # Add modality info to title if provided
-    if modalities:
-        fig.suptitle(f'Defacing Results - {", ".join(modalities)}')
-    else:
-        fig.suptitle('Defacing Results')
+    # Add title
+    fig.suptitle('Defacing Results Comparison')
     
     # Save the plot
     plt.tight_layout()
