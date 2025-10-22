@@ -41,49 +41,57 @@ def check_outpath(bids_dir, subject_label):
 
 def copy_no_deid(bids_dir, subject_label, image_file, session=None):
     """
-    Move original non-defaced images to sourcedata.
-
+    Copy original non-deidentified image and JSON files to sourcedata directory.
+    
     Parameters
     ----------
     bids_dir : str
         Path to BIDS root directory.
     subject_label : str
-        Label of subject to move (without 'sub-').
+        Label of subject (without 'sub-' prefix).
     image_file : str
-        Original non-defaced image.
-    session : str
-        Session label (if applicable).
-
-    Returns
-    -------
-    moved_img_path : str
-        Path to moved original non-defaced image.
+        Path to the image file to be copied.
+    session : str, optional
+        Session label (without 'ses-' prefix).
     """
-
-    # Construct the destination path based on whether session data is provided
+    
+    import os
+    import json
+    from shutil import copy2
+    from os.path import join as opj
+    
+    # Create paths for organized structure - files should go to anat directory
     if session is not None:
-        path = os.path.join(bids_dir, "sourcedata/bidsonym/sub-%s/ses-%s" % (subject_label, session))
+        # For session-based datasets, create anat subdirectory within session
+        output_dir = opj(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', f'ses-{session}', 'anat')
     else:
-        path = os.path.join(bids_dir, "sourcedata/bidsonym/sub-%s" % subject_label)
+        # For single-session datasets, create anat subdirectory within subject
+        output_dir = opj(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', 'anat')
     
-    # Extract just the filename from the full image file path
-    outfile = image_file[image_file.rfind('/') + 1:]
-    moved_img_path = os.path.join(path, outfile)
-
-    # Check if this specific file already exists (not just the directory)
-    if os.path.exists(moved_img_path):
-        print(f"Warning: Non-de-identified file {moved_img_path} already exists. Skipping copy.")
-        return moved_img_path
+    # Ensure the anat output directory exists
+    os.makedirs(output_dir, exist_ok=True)
     
-    # Create the directory structure if it doesn't exist
-    os.makedirs(path, exist_ok=True)
+    # Extract filename and create desc-nondeid version
+    original_basename = os.path.basename(image_file)
+    nondeid_basename = original_basename.replace('.nii.gz', '_desc-nondeid.nii.gz')
     
-    # Copy the file to preserve the original
-    import shutil
-    shutil.copy2(image_file, moved_img_path)
+    # Copy the NIfTI image file
+    nondeid_image_path = opj(output_dir, nondeid_basename)
+    copy2(image_file, nondeid_image_path)
+    print(f"Copied original image to: {nondeid_image_path}")
     
-    print(f"Copied original file to: {moved_img_path}")
-    return moved_img_path
+    # Look for corresponding JSON file
+    json_file = image_file.replace('.nii.gz', '.json')
+    if os.path.exists(json_file):
+        # Copy JSON file with desc-nondeid naming
+        nondeid_json_basename = original_basename.replace('.nii.gz', '_desc-nondeid.json')
+        nondeid_json_path = opj(output_dir, nondeid_json_basename)
+        copy2(json_file, nondeid_json_path)
+        print(f"Copied original JSON to: {nondeid_json_path}")
+    else:
+        print(f"No JSON file found for: {image_file}")
+    
+    return nondeid_image_path
 
 
 def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None, modalities=None):
@@ -831,132 +839,83 @@ def deface_image(image, warped_mask, outfile):
 def clean_up_files(bids_dir, subject_label, session=None):
     """
     Restructure BIDSonym outcomes following BIDS conventions.
-
-    Parameters
-    ----------
-    bids_dir : str
-        Path to BIDS root directory.
-    subject_label : str
-        Label of subject to move (without 'sub-').
-    session : str, optional
-        If multiple sessions exist, create session specific
-        structure.
+    This function may not need to move files if they're already in the correct locations.
     """
     
-    # Add missing import
     import os
     from glob import glob
     from shutil import move
-
+    
     # Create output paths based on whether session information is provided
     if session is not None:
-        # For multi-session datasets, organize files by session
-        out_path_anat = os.path.join(bids_dir, "sourcedata/bidsonym/sub-%s/ses-%s/anat"
-                                     % (subject_label, session))
-        out_path_qc = os.path.join(bids_dir, "sourcedata/bidsonym/sub-%s/ses-%s/QC"
-                                   % (subject_label, session))
-        out_path_info = os.path.join(bids_dir, "sourcedata/bidsonym/sub-%s/ses-%s/meta_data_info"
-                                     % (subject_label, session))
-        
-        # Find all files for this specific subject and session combination
-        # Look for NIfTI image files (original, defaced, brain masks, etc.)
-        list_imaging_files = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label,
-                                               'sub-' + subject_label + '_ses-' + session + '*.nii.gz'))
-        
-        # Find brain mask files specifically (these are anatomical derivatives)
-        list_brainmask_files = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label,
-                                                 'sub-' + subject_label + '_ses-' + session + '*_brainmask*.nii.gz'))
-        
-        # Find JSON files that correspond to the NIfTI images (should go with images in anat/)
-        list_image_json_files = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label,
-                                                  'sub-' + subject_label + '_ses-' + session + '*_desc-nondeid.json'))
-        
-        # Find visualization files (PNG images showing before/after defacing) - go to QC/
-        list_graphics = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label,
-                                          'sub-' + subject_label + '_ses-' + session + '*.png'))
-        
-        # Find animated GIF files (showing defacing process or comparisons) - go to QC/
-        list_gifs = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label,
-                                      'sub-' + subject_label + '_ses-' + session + '*.gif'))
-        
-        # Find metadata analysis CSV files (from check_meta_data function)
-        list_info_files = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label,
-                                            'sub-' + subject_label + '_ses-' + session + '*.csv'))
-        
-        # Find other JSON metadata files that don't correspond to images (task-level, etc.)
-        all_json_files = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label,
-                                           'sub-' + subject_label + '_ses-' + session + '*.json'))
-        list_other_json_files = [f for f in all_json_files if f not in list_image_json_files]
-        
+        session_path = os.path.join(bids_dir, f"sourcedata/bidsonym/sub-{subject_label}/ses-{session}")
+        out_path_anat = os.path.join(session_path, "anat")
+        out_path_qc = os.path.join(session_path, "QC")
+        out_path_info = os.path.join(session_path, "meta_data_info")
     else:
-        # For single-session datasets, organize files without session subdirectories
-        out_path_anat = os.path.join(bids_dir, "sourcedata/bidsonym/sub-%s/anat" % subject_label)
-        out_path_qc = os.path.join(bids_dir, "sourcedata/bidsonym/sub-%s/QC" % subject_label)
-        out_path_info = os.path.join(bids_dir, "sourcedata/bidsonym/sub-%s/meta_data_info" % subject_label)
-        
-        # Find all files for this subject (no session filtering)
-        # Look for NIfTI image files in the subject's directory
-        list_imaging_files = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label, '*.nii.gz'))
-        
-        # Find brain mask files specifically (these are anatomical derivatives)
-        list_brainmask_files = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label, '*_brainmask*.nii.gz'))
-        
-        # Find JSON files that correspond to the NIfTI images (should go with images in anat/)
-        list_image_json_files = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label, '*_desc-nondeid.json'))
-        
-        # Find visualization PNG files - go to QC/
-        list_graphics = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label, '*.png'))
-        
-        # Find animated GIF files - go to QC/
-        list_gifs = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label, '*.gif'))
-        
-        # Find metadata analysis CSV files
-        list_info_files = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label, '*.csv'))
-        
-        # Find other JSON metadata files that don't correspond to images
-        all_json_files = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label, '*.json'))
-        list_other_json_files = [f for f in all_json_files if f not in list_image_json_files]
+        subject_path = os.path.join(bids_dir, f"sourcedata/bidsonym/sub-{subject_label}")
+        out_path_anat = os.path.join(subject_path, "anat")
+        out_path_qc = os.path.join(subject_path, "QC")
+        out_path_info = os.path.join(subject_path, "meta_data_info")
 
     # Create output directories if they don't exist
-    # Directory for anatomical files (NIfTI images + brain masks + their corresponding JSON files)
-    if not os.path.isdir(out_path_anat):
-        os.makedirs(out_path_anat)
-    
-    # Directory for quality control visualizations (PNG plots and GIF animations)
-    if not os.path.isdir(out_path_qc):
-        os.makedirs(out_path_qc)
-    
-    # Directory for meta-data-related files (CSV analysis files and other JSON files)
-    if not os.path.isdir(out_path_info):
-        os.makedirs(out_path_info)
+    os.makedirs(out_path_anat, exist_ok=True)
+    os.makedirs(out_path_qc, exist_ok=True)
+    os.makedirs(out_path_info, exist_ok=True)
 
-    # Move anatomical files (NIfTI images + brain masks + their corresponding JSON metadata) to anat directory
-    anat_files = list_imaging_files + list_brainmask_files + list_image_json_files
-    
-    # Remove duplicates that might occur if brain masks are already in imaging_files
-    anat_files = list(set(anat_files))
-    
-    for anat_file in anat_files:
-        # Extract just the filename from the full path
-        file_out = anat_file[anat_file.rfind('/') + 1:]
-        # Move file to the organized anat directory
-        move(anat_file, os.path.join(out_path_anat, file_out))
+    # Look for files that might be in the session/subject root instead of subdirectories
+    if session is not None:
+        root_search_path = os.path.join(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/ses-{session}')
+    else:
+        root_search_path = os.path.join(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}')
 
-    # Move quality control visualization files (PNG plots + GIF animations) to QC directory
-    qc_files = list_graphics + list_gifs
-    for qc_file in qc_files:
-        # Extract just the filename from the full path
-        file_out = qc_file[qc_file.rfind('/') + 1:]
-        # Move file to the organized QC directory
-        move(qc_file, os.path.join(out_path_qc, file_out))
+    # Find files that are in the root and should be moved to subdirectories
+    
+    # Find anatomical files (NIfTI and JSON with desc-nondeid) that are in root
+    root_nii_files = glob(os.path.join(root_search_path, '*desc-nondeid.nii.gz'))
+    root_json_files = glob(os.path.join(root_search_path, '*desc-nondeid.json'))
+    root_brainmask_files = glob(os.path.join(root_search_path, '*brainmask*.nii.gz'))
+    
+    # Move anatomical files from root to anat directory
+    anat_files_to_move = root_nii_files + root_json_files + root_brainmask_files
+    for anat_file in anat_files_to_move:
+        filename = os.path.basename(anat_file)
+        target_path = os.path.join(out_path_anat, filename)
+        if anat_file != target_path:  # Only move if not already in correct location
+            move(anat_file, target_path)
+            print(f"Moved {filename} to anat directory")
 
-    # Move meta-data analysis files to the organized info directory
-    # This includes CSV analysis files and other JSON metadata files (not image-specific)
-    for info_file in list_info_files + list_other_json_files:
-        # Extract just the filename from the full path
-        file_out = info_file[info_file.rfind('/') + 1:]
-        # Move file to the organized metadata info directory
-        move(info_file, os.path.join(out_path_info, file_out))
+    # Find QC files (PNG and GIF) that are in root
+    root_png_files = glob(os.path.join(root_search_path, '*.png'))
+    root_gif_files = glob(os.path.join(root_search_path, '*.gif'))
+    
+    # Move QC files from root to QC directory
+    qc_files_to_move = root_png_files + root_gif_files
+    for qc_file in qc_files_to_move:
+        filename = os.path.basename(qc_file)
+        target_path = os.path.join(out_path_qc, filename)
+        if qc_file != target_path:  # Only move if not already in correct location
+            move(qc_file, target_path)
+            print(f"Moved {filename} to QC directory")
+
+    # Find metadata info files (CSV) that are in root
+    root_csv_files = glob(os.path.join(root_search_path, '*.csv'))
+    root_other_json_files = glob(os.path.join(root_search_path, '*.json'))
+    # Filter out desc-nondeid JSON files (those go to anat)
+    root_other_json_files = [f for f in root_other_json_files if 'desc-nondeid' not in f]
+    
+    # Move metadata info files from root to meta_data_info directory
+    info_files_to_move = root_csv_files + root_other_json_files
+    for info_file in info_files_to_move:
+        filename = os.path.basename(info_file)
+        target_path = os.path.join(out_path_info, filename)
+        if info_file != target_path:  # Only move if not already in correct location
+            move(info_file, target_path)
+            print(f"Moved {filename} to meta_data_info directory")
+
+    print(f"File organization completed for subject {subject_label}")
+    if session:
+        print(f"Session: {session}")
 
 
 def revert_bidsonym(bids_dir, subject_label, session=None, confirm=True):

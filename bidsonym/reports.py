@@ -118,18 +118,22 @@ def plot_brainmask_overlay(bids_dir, subject_label, session=None, t2w=None):
     # Define path to BIDSonym sourcedata directory for this subject
     if session is not None:
         bidsonym_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/ses-{session}')
+        qc_output_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/ses-{session}/QC')
     else:
         bidsonym_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}')
+        qc_output_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/QC')
 
     print(f"DEBUG: Looking for brain masks in: {bidsonym_path}")
+    print(f"DEBUG: QC outputs will be saved to: {qc_output_path}")
 
-    # Ensure output directory exists
+    # Ensure output directories exist
     os.makedirs(bidsonym_path, exist_ok=True)
+    os.makedirs(qc_output_path, exist_ok=True)
 
     # List all files in sourcedata to see what's available
     if os.path.exists(bidsonym_path):
         all_files = os.listdir(bidsonym_path)
-        brain_mask_files = [f for f in all_files if 'brainmask' in f and 'desc-nondeid' in f]
+        brain_mask_files = [f for f in all_files if 'brainmask' in f and '.nii.gz' in f]
         print(f"DEBUG: All files in sourcedata: {all_files}")
         print(f"DEBUG: Brain mask files found: {brain_mask_files}")
     else:
@@ -160,26 +164,60 @@ def plot_brainmask_overlay(bids_dir, subject_label, session=None, t2w=None):
     for t1w in defaced_t1w:
         print(f"DEBUG: Processing T1w: {os.path.basename(t1w)}")
         
-        # Construct the EXACT path to the corresponding brain mask file
-        brain_mask_filename = (
-            t1w[t1w.rfind('/') + 1:t1w.rfind('.nii')] + 
-            '_brainmask_desc-nondeid.nii.gz'
-        )
+        # Updated brain mask filename construction to match the actual naming pattern
+        # Based on brain_extraction functions, the pattern is: original_name + '_brainmask_desc-nondeid.nii.gz'
+        t1w_basename = os.path.basename(t1w)
+        # Remove the .nii.gz extension and add brainmask suffix
+        brain_mask_filename = t1w_basename.replace('.nii.gz', '_brainmask_desc-nondeid.nii.gz')
         
         print(f"DEBUG: Looking for brain mask: {brain_mask_filename}")
         
-        # Look for the brain mask - try both direct path and recursive search
+        # Look for the brain mask - try multiple approaches
         brainmask_t1w = opj(bidsonym_path, brain_mask_filename)
         
         if not os.path.exists(brainmask_t1w):
-            # Try recursive search in case it's in a subdirectory
-            recursive_search = glob(opj(bidsonym_path, '**', brain_mask_filename), recursive=True)
-            if recursive_search:
-                brainmask_t1w = recursive_search[0]
-                print(f"DEBUG: Found brain mask via recursive search: {brainmask_t1w}")
+            print(f"DEBUG: Direct path not found, trying alternative patterns...")
+            
+            # Try different naming patterns that might exist
+            alternative_patterns = [
+                # Pattern 1: Try without desc-nondeid
+                t1w_basename.replace('.nii.gz', '_brainmask.nii.gz'),
+                # Pattern 2: Try with just brainmask prefix
+                t1w_basename.replace('.nii.gz', '_brain.nii.gz'),
+                # Pattern 3: Try with mask suffix
+                t1w_basename.replace('.nii.gz', '_mask.nii.gz'),
+            ]
+            
+            found_mask = None
+            for pattern in alternative_patterns:
+                test_path = opj(bidsonym_path, pattern)
+                print(f"DEBUG: Testing pattern: {pattern}")
+                if os.path.exists(test_path):
+                    found_mask = test_path
+                    print(f"DEBUG: Found brain mask with alternative pattern: {pattern}")
+                    break
+            
+            if found_mask:
+                brainmask_t1w = found_mask
             else:
-                print(f"DEBUG: Brain mask not found: {brain_mask_filename}")
-                continue
+                # Try recursive search with wildcards
+                print(f"DEBUG: Trying recursive search for brain mask...")
+                recursive_patterns = [
+                    f"*{t1w_basename.replace('.nii.gz', '')}*brainmask*.nii.gz",
+                    f"*{t1w_basename.split('_')[0]}*brainmask*.nii.gz",  # Match by subject
+                ]
+                
+                for pattern in recursive_patterns:
+                    recursive_search = glob(opj(bidsonym_path, '**', pattern), recursive=True)
+                    print(f"DEBUG: Recursive search for '{pattern}': {recursive_search}")
+                    if recursive_search:
+                        brainmask_t1w = recursive_search[0]
+                        print(f"DEBUG: Found brain mask via recursive search: {brainmask_t1w}")
+                        break
+                
+                if not recursive_search:
+                    print(f"DEBUG: No brain mask found for {t1w_basename}, skipping...")
+                    continue
         else:
             print(f"DEBUG: Found brain mask: {brainmask_t1w}")
         
@@ -190,7 +228,7 @@ def plot_brainmask_overlay(bids_dir, subject_label, session=None, t2w=None):
             
             # Generate plots for each anatomical direction
             for i, direction in enumerate(['x', 'y', 'z']):
-                ax = fig.add_subplot(1, 3, i + 1)  # Changed to horizontal layout
+                ax = fig.add_subplot(1, 3, i + 1)
                 
                 # Find optimal slice positions for this direction
                 cuts = find_cut_slices(t1w, direction=direction, n_cuts=12)
@@ -207,12 +245,9 @@ def plot_brainmask_overlay(bids_dir, subject_label, session=None, t2w=None):
                     colorbar=False           # No colorbar
                 )
             
-            # Save the plot with descriptive filename
-            output_filename = (
-                t1w[t1w.rfind('/') + 1:t1w.rfind('.nii')] + 
-                '_desc-brainmaskdeid.png'
-            )
-            output_path = opj(bidsonym_path, output_filename)
+            # Save the plot to QC directory instead of session root
+            output_filename = t1w_basename.replace('.nii.gz', '_desc-brainmaskdeid.png')
+            output_path = opj(qc_output_path, output_filename)  # Changed to QC directory
             
             plt.savefig(output_path, dpi=150, bbox_inches='tight')
             plt.close()
@@ -226,7 +261,7 @@ def plot_brainmask_overlay(bids_dir, subject_label, session=None, t2w=None):
             traceback.print_exc()
             plt.close()  # Ensure figure is closed even on error
 
-    # Process T2w/FLAIR images if requested
+    # Process FLAIR images with same QC directory fix
     if t2w is not None:
         print(f"DEBUG: Processing FLAIR images (t2w={t2w})")
         if session is not None:
@@ -247,58 +282,64 @@ def plot_brainmask_overlay(bids_dir, subject_label, session=None, t2w=None):
 
         print(f"DEBUG: Found {len(defaced_flair)} FLAIR images: {[os.path.basename(f) for f in defaced_flair]}")
 
-        # Process each FLAIR image found
+        # Process each FLAIR image found (same logic as T1w)
         for flair in defaced_flair:
             print(f"DEBUG: Processing FLAIR: {os.path.basename(flair)}")
             
-            # Construct the EXACT path to the corresponding brain mask
-            brain_mask_filename = (
-                flair[flair.rfind('/') + 1:flair.rfind('.nii')] + 
-                '_brainmask_desc-nondeid.nii.gz'
-            )
+            # Similar brain mask search logic for FLAIR
+            flair_basename = os.path.basename(flair)
+            brain_mask_filename = flair_basename.replace('.nii.gz', '_brainmask_desc-nondeid.nii.gz')
             
-            # Look for the brain mask
             brainmask_flair = opj(bidsonym_path, brain_mask_filename)
             
             if not os.path.exists(brainmask_flair):
-                recursive_search = glob(opj(bidsonym_path, '**', brain_mask_filename), recursive=True)
-                if recursive_search:
-                    brainmask_flair = recursive_search[0]
-                    print(f"DEBUG: Found FLAIR brain mask via recursive search: {brainmask_flair}")
+                # Try alternative patterns for FLAIR as well
+                alternative_patterns = [
+                    flair_basename.replace('.nii.gz', '_brainmask.nii.gz'),
+                    flair_basename.replace('.nii.gz', '_brain.nii.gz'),
+                    flair_basename.replace('.nii.gz', '_mask.nii.gz'),
+                ]
+                
+                found_mask = None
+                for pattern in alternative_patterns:
+                    test_path = opj(bidsonym_path, pattern)
+                    if os.path.exists(test_path):
+                        found_mask = test_path
+                        break
+                
+                if found_mask:
+                    brainmask_flair = found_mask
                 else:
-                    print(f"DEBUG: FLAIR brain mask not found: {brain_mask_filename}")
-                    continue
+                    recursive_search = glob(opj(bidsonym_path, '**', f"*{flair_basename.replace('.nii.gz', '')}*brainmask*.nii.gz"), recursive=True)
+                    if recursive_search:
+                        brainmask_flair = recursive_search[0]
+                    else:
+                        print(f"DEBUG: No brain mask found for FLAIR {flair_basename}, skipping...")
+                        continue
             
             try:
-                # Create figure with subplots
+                # Same plotting logic as T1w
                 fig = figure(figsize=(15, 5))
                 plt.subplots_adjust(left=0, bottom=0, right=1, top=1, wspace=-0.2, hspace=0)
                 
-                # Generate plots for each anatomical direction
                 for i, direction in enumerate(['x', 'y', 'z']):
                     ax = fig.add_subplot(1, 3, i + 1)
-                    
-                    # Find optimal slice positions for FLAIR image
                     cuts = find_cut_slices(flair, direction=direction, n_cuts=12)
                     
-                    # Plot brain mask overlaid on defaced FLAIR image
                     plot_stat_map(
-                        brainmask_flair,         # Specific brain mask for this image
-                        bg_img=flair,            # Defaced FLAIR as background
-                        display_mode=direction,   # Anatomical direction
-                        cut_coords=cuts,         # Slice positions
-                        annotate=False,          # No anatomical annotations
-                        dim=-1,                  # Dim background slightly
-                        axes=ax,                 # Use specific subplot
-                        colorbar=False           # No colorbar
+                        brainmask_flair,
+                        bg_img=flair,
+                        display_mode=direction,
+                        cut_coords=cuts,
+                        annotate=False,
+                        dim=-1,
+                        axes=ax,
+                        colorbar=False
                     )
                 
-                # Save FLAIR plot with descriptive filename
-                output_filename = (
-                    flair[flair.rfind('/') + 1:flair.rfind('.nii')] + 
-                    '_desc-brainmaskdeid.png'
-                )
-                output_path = opj(bidsonym_path, output_filename)
+                # Save FLAIR plot to QC directory
+                output_filename = flair_basename.replace('.nii.gz', '_desc-brainmaskdeid.png')
+                output_path = opj(qc_output_path, output_filename)  # Changed to QC directory
                 
                 plt.savefig(output_path, dpi=150, bbox_inches='tight')
                 plt.close()
