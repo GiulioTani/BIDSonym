@@ -2,12 +2,8 @@ import os
 import sys
 import json
 
-import numpy as np
 from glob import glob
 from shutil import move
-
-from nibabel import load, Nifti1Image
-from nilearn.image import math_img
 
 import nipype.pipeline.engine as pe
 from nipype import Function
@@ -15,6 +11,8 @@ from nipype.interfaces import utility as niu
 from nipype.interfaces.fsl import BET
 
 from bidsonym.reports import setup_logging
+
+# Add any other missing imports if needed
 
 
 def check_outpath(bids_dir, subject_label):
@@ -110,6 +108,8 @@ def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None, mod
     """
     
     import os
+    import json
+    import pandas as pd
     from glob import glob
     from bids import BIDSLayout
     
@@ -120,7 +120,25 @@ def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None, mod
     if modalities is None:
         modalities = ['T1w']
     
-    # Find NIfTI image files for the specified subject, session, and modalities
+    # Default problematic fields to check if none specified
+    if prob_fields is None:
+        prob_fields = [
+            'AcquisitionDate', 'AcquisitionTime', 'InstitutionName', 
+            'InstitutionAddress', 'StationName', 'ManufacturerModelName',
+            'DeviceSerialNumber', 'SoftwareVersions', 'StudyDate',
+            'StudyTime', 'SeriesDate', 'SeriesTime', 'StudyID',
+            'StudyInstanceUID', 'SeriesInstanceUID', 'StudyDescription',
+            'SeriesDescription', 'PatientName', 'PatientID', 'PatientBirthDate',
+            'PatientSex', 'PatientAge', 'PatientWeight', 'PatientPosition'
+        ]
+    
+    print(f"\nChecking metadata for subject {subject_label}")
+    if session:
+        print(f"Session: {session}")
+    print(f"Modalities: {modalities}")
+    print(f"Checking for potentially identifying fields: {prob_fields}")
+    
+    # Find NIfTI image files and JSON metadata files for the specified criteria
     list_subject_image_files = []
     list_sub_meta_files = []
     
@@ -163,10 +181,9 @@ def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None, mod
         list_sub_meta_files.extend(json_files)
     
     # Find dataset-level JSON metadata files (at root of BIDS directory)
-    # Only include task-level files that are relevant to the modalities being processed
     list_task_meta_files = []
     for modality in modalities:
-        if modality in ['bold', 'func']:
+        if 'func' in modality or 'bold' in modality:
             # For functional data, include task JSON files
             task_files = glob(os.path.join(bids_dir, 'task-*_bold.json'))
             list_task_meta_files.extend(task_files)
@@ -196,7 +213,7 @@ def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None, mod
         return
     
     # Inform user about which files will be processed
-    print(f'Found {len(list_subject_image_files)} image files for processing:')
+    print(f'\nFound {len(list_subject_image_files)} image files for processing:')
     for img_file in list_subject_image_files:
         print(f'  {os.path.basename(img_file)}')
     
@@ -204,15 +221,136 @@ def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None, mod
     for meta_file in list_meta_files:
         print(f'  {os.path.basename(meta_file)}')
 
-    # Process each image file's header metadata
-    for subject_image_file in list_subject_image_files:
-        # Image header processing code would go here
-        pass
-
+    # Initialize results storage
+    metadata_results = []
+    
     # Process each JSON metadata file
+    print(f'\nProcessing JSON metadata files...')
     for meta_file in list_meta_files:
-        # JSON file processing code would go here
-        pass
+        print(f'\nChecking: {os.path.basename(meta_file)}')
+        
+        try:
+            with open(meta_file, 'r') as f:
+                metadata = json.load(f)
+            
+            # Check each problematic field
+            for field in prob_fields:
+                if field in metadata:
+                    value = metadata[field]
+                    result = {
+                        'file': os.path.basename(meta_file),
+                        'field': field,
+                        'value': str(value),
+                        'potentially_identifying': True
+                    }
+                    metadata_results.append(result)
+                    print(f'  WARNING: Found potentially identifying field: {field} = {value}')
+            
+            # Check for any other fields that might be identifying
+            identifying_keywords = ['patient', 'name', 'id', 'date', 'time', 'institution', 'address']
+            for key, value in metadata.items():
+                if key not in prob_fields:
+                    key_lower = key.lower()
+                    if any(keyword in key_lower for keyword in identifying_keywords):
+                        result = {
+                            'file': os.path.basename(meta_file),
+                            'field': key,
+                            'value': str(value),
+                            'potentially_identifying': True
+                        }
+                        metadata_results.append(result)
+                        print(f'  WARNING: Found additional potentially identifying field: {key} = {value}')
+        
+        except Exception as e:
+            print(f'  ERROR: Error reading {meta_file}: {e}')
+    
+    # Process each image file's header metadata
+    print('\nProcessing image header metadata...')
+    for subject_image_file in list_subject_image_files:
+        print(f'\nChecking headers: {os.path.basename(subject_image_file)}')
+        
+        try:
+            from nibabel import load
+            img = load(subject_image_file)
+            header = img.header
+            
+            # Check NIfTI header fields
+            if hasattr(header, 'get_data_dtype'):
+                # Check description field
+                if hasattr(header, 'get_descrip'):
+                    descrip = header.get_descrip()
+                    if descrip and descrip.strip():
+                        result = {
+                            'file': os.path.basename(subject_image_file),
+                            'field': 'descrip',
+                            'value': str(descrip),
+                            'potentially_identifying': True
+                        }
+                        metadata_results.append(result)
+                        print(f'  WARNING: Found description in header: {descrip}')
+            
+            # Check for DICOM fields in NIfTI extensions
+            if hasattr(img, 'get_header') and hasattr(img.get_header(), 'extensions'):
+                extensions = img.get_header().extensions
+                for ext in extensions:
+                    if hasattr(ext, 'get_content'):
+                        content = str(ext.get_content())
+                        for field in prob_fields:
+                            if field in content:
+                                result = {
+                                    'file': os.path.basename(subject_image_file),
+                                    'field': f'extension_{field}',
+                                    'value': 'Found in NIfTI extension',
+                                    'potentially_identifying': True
+                                }
+                                metadata_results.append(result)
+                                print(f'  WARNING: Found {field} in NIfTI extension')
+        
+        except Exception as e:
+            print(f'  ERROR: Error reading headers from {subject_image_file}: {e}')
+    
+    # Generate summary report
+    print(f'\n{"="*60}')
+    print(f'METADATA CHECK SUMMARY')
+    print(f'{"="*60}')
+    
+    if metadata_results:
+        print(f'Found {len(metadata_results)} potentially identifying metadata fields:')
+        
+        # Create DataFrame for better organization
+        df = pd.DataFrame(metadata_results)
+        
+        # Group by file for cleaner output
+        for filename in df['file'].unique():
+            file_results = df[df['file'] == filename]
+            print(f'\nFile: {filename}:')
+            for _, row in file_results.iterrows():
+                print(f'   {row["field"]}: {row["value"]}')
+        
+        # Save results to CSV in the proper meta_data_info directory
+        if session:
+            output_dir = os.path.join(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', f'ses-{session}', 'meta_data_info')
+            csv_filename = f'sub-{subject_label}_ses-{session}_metadata-check.csv'
+        else:
+            output_dir = os.path.join(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', 'meta_data_info')
+            csv_filename = f'sub-{subject_label}_metadata-check.csv'
+        
+        # Ensure the meta_data_info directory exists
+        os.makedirs(output_dir, exist_ok=True)
+        
+        csv_path = os.path.join(output_dir, csv_filename)
+        df.to_csv(csv_path, index=False)
+        print(f'\nResults saved to: {csv_path}')
+        
+        print(f'\nWARNING: Found potentially identifying information!')
+        print(f'   Please review the results and consider removing or anonymizing')
+        print(f'   the identified fields before sharing this data.')
+        
+    else:
+        print(f'SUCCESS: No potentially identifying metadata fields found.')
+        print(f'   The checked files appear to be properly de-identified.')
+    
+    print(f'{"="*60}')
 
 
 def del_meta_data(bids_dir, subject_label, fields_del):
@@ -704,12 +842,19 @@ def clean_up_files(bids_dir, subject_label, session=None):
         If multiple sessions exist, create session specific
         structure.
     """
+    
+    # Add missing import
+    import os
+    from glob import glob
+    from shutil import move
 
     # Create output paths based on whether session information is provided
     if session is not None:
         # For multi-session datasets, organize files by session
-        out_path_images = os.path.join(bids_dir, "sourcedata/bidsonym/sub-%s/ses-%s/images"
-                                       % (subject_label, session))
+        out_path_anat = os.path.join(bids_dir, "sourcedata/bidsonym/sub-%s/ses-%s/anat"
+                                     % (subject_label, session))
+        out_path_qc = os.path.join(bids_dir, "sourcedata/bidsonym/sub-%s/ses-%s/QC"
+                                   % (subject_label, session))
         out_path_info = os.path.join(bids_dir, "sourcedata/bidsonym/sub-%s/ses-%s/meta_data_info"
                                      % (subject_label, session))
         
@@ -718,11 +863,19 @@ def clean_up_files(bids_dir, subject_label, session=None):
         list_imaging_files = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label,
                                                'sub-' + subject_label + '_ses-' + session + '*.nii.gz'))
         
-        # Find visualization files (PNG images showing before/after defacing)
+        # Find brain mask files specifically (these are anatomical derivatives)
+        list_brainmask_files = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label,
+                                                 'sub-' + subject_label + '_ses-' + session + '*_brainmask*.nii.gz'))
+        
+        # Find JSON files that correspond to the NIfTI images (should go with images in anat/)
+        list_image_json_files = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label,
+                                                  'sub-' + subject_label + '_ses-' + session + '*_desc-nondeid.json'))
+        
+        # Find visualization files (PNG images showing before/after defacing) - go to QC/
         list_graphics = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label,
                                           'sub-' + subject_label + '_ses-' + session + '*.png'))
         
-        # Find animated GIF files (showing defacing process or comparisons)
+        # Find animated GIF files (showing defacing process or comparisons) - go to QC/
         list_gifs = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label,
                                       'sub-' + subject_label + '_ses-' + session + '*.gif'))
         
@@ -730,53 +883,76 @@ def clean_up_files(bids_dir, subject_label, session=None):
         list_info_files = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label,
                                             'sub-' + subject_label + '_ses-' + session + '*.csv'))
         
-        # Find JSON metadata files (original and modified)
-        list_meta_files = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label,
-                                            'sub-' + subject_label + '_ses-' + session + '*.json'))
+        # Find other JSON metadata files that don't correspond to images (task-level, etc.)
+        all_json_files = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label,
+                                           'sub-' + subject_label + '_ses-' + session + '*.json'))
+        list_other_json_files = [f for f in all_json_files if f not in list_image_json_files]
+        
     else:
         # For single-session datasets, organize files without session subdirectories
-        out_path_images = os.path.join(bids_dir, "sourcedata/bidsonym/sub-%s/images" % subject_label)
+        out_path_anat = os.path.join(bids_dir, "sourcedata/bidsonym/sub-%s/anat" % subject_label)
+        out_path_qc = os.path.join(bids_dir, "sourcedata/bidsonym/sub-%s/QC" % subject_label)
         out_path_info = os.path.join(bids_dir, "sourcedata/bidsonym/sub-%s/meta_data_info" % subject_label)
         
         # Find all files for this subject (no session filtering)
         # Look for NIfTI image files in the subject's directory
         list_imaging_files = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label, '*.nii.gz'))
         
-        # Find visualization PNG files
+        # Find brain mask files specifically (these are anatomical derivatives)
+        list_brainmask_files = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label, '*_brainmask*.nii.gz'))
+        
+        # Find JSON files that correspond to the NIfTI images (should go with images in anat/)
+        list_image_json_files = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label, '*_desc-nondeid.json'))
+        
+        # Find visualization PNG files - go to QC/
         list_graphics = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label, '*.png'))
         
-        # Find animated GIF files
+        # Find animated GIF files - go to QC/
         list_gifs = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label, '*.gif'))
         
         # Find metadata analysis CSV files
         list_info_files = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label, '*.csv'))
         
-        # Find JSON metadata files
-        list_meta_files = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label, '*.json'))
+        # Find other JSON metadata files that don't correspond to images
+        all_json_files = glob(os.path.join(bids_dir, 'sourcedata/bidsonym/sub-%s' % subject_label, '*.json'))
+        list_other_json_files = [f for f in all_json_files if f not in list_image_json_files]
 
     # Create output directories if they don't exist
-    # Directory for image-related files (NIfTI, PNG, GIF)
-    if os.path.isdir(out_path_images) is False:
-        os.makedirs(out_path_images)
+    # Directory for anatomical files (NIfTI images + brain masks + their corresponding JSON files)
+    if not os.path.isdir(out_path_anat):
+        os.makedirs(out_path_anat)
     
-    # Directory for meta-data-related files (CSV, JSON)
-    if os.path.isdir(out_path_info) is False:
+    # Directory for quality control visualizations (PNG plots and GIF animations)
+    if not os.path.isdir(out_path_qc):
+        os.makedirs(out_path_qc)
+    
+    # Directory for meta-data-related files (CSV analysis files and other JSON files)
+    if not os.path.isdir(out_path_info):
         os.makedirs(out_path_info)
 
-    # Combine all image-related files for organized moving
-    # This includes original images, defaced images, brain masks, and visualizations
-    images = list_imaging_files + list_graphics + list_gifs
-
-    # Move all image-related files to the organized images directory
-    for image_file in images:
+    # Move anatomical files (NIfTI images + brain masks + their corresponding JSON metadata) to anat directory
+    anat_files = list_imaging_files + list_brainmask_files + list_image_json_files
+    
+    # Remove duplicates that might occur if brain masks are already in imaging_files
+    anat_files = list(set(anat_files))
+    
+    for anat_file in anat_files:
         # Extract just the filename from the full path
-        file_out = image_file[image_file.rfind('/') + 1:]
-        # Move file to the organized images directory
-        move(image_file, os.path.join(out_path_images, file_out))
+        file_out = anat_file[anat_file.rfind('/') + 1:]
+        # Move file to the organized anat directory
+        move(anat_file, os.path.join(out_path_anat, file_out))
 
-    # Move all meta-data files to the organized info directory
-    # This includes CSV analysis files and JSON metadata files
-    for info_file in list_info_files + list_meta_files:
+    # Move quality control visualization files (PNG plots + GIF animations) to QC directory
+    qc_files = list_graphics + list_gifs
+    for qc_file in qc_files:
+        # Extract just the filename from the full path
+        file_out = qc_file[qc_file.rfind('/') + 1:]
+        # Move file to the organized QC directory
+        move(qc_file, os.path.join(out_path_qc, file_out))
+
+    # Move meta-data analysis files to the organized info directory
+    # This includes CSV analysis files and other JSON metadata files (not image-specific)
+    for info_file in list_info_files + list_other_json_files:
         # Extract just the filename from the full path
         file_out = info_file[info_file.rfind('/') + 1:]
         # Move file to the organized metadata info directory
@@ -877,21 +1053,34 @@ def revert_bidsonym(bids_dir, subject_label, session=None, confirm=True):
     original_json_files = glob(os.path.join(sourcedata_base_dir, "**/*desc-nondeid.json"), recursive=True)
     
     # Also check organized subdirectories that may exist if clean_up_files was run
-    # These subdirectories separate images from metadata for better organization
-    images_subdir = os.path.join(sourcedata_base_dir, "images")
+    # These subdirectories separate anatomical files from metadata and QC for better organization
+    anat_subdir = os.path.join(sourcedata_base_dir, "anat")  # Changed from "images" to "anat"
+    qc_subdir = os.path.join(sourcedata_base_dir, "QC")
     metadata_subdir = os.path.join(sourcedata_base_dir, "meta_data_info")
     
-    # Check if organized images subdirectory exists and scan it
-    if os.path.exists(images_subdir):
-        log_print(f"   Checking organized images subdirectory: {images_subdir}")
-        additional_images = glob(os.path.join(images_subdir, "*desc-nondeid.nii.gz"))
+    # Check if organized anat subdirectory exists and scan it
+    if os.path.exists(anat_subdir):
+        log_print(f"   Checking organized anat subdirectory: {anat_subdir}")
+        additional_images = glob(os.path.join(anat_subdir, "*desc-nondeid.nii.gz"))
+        additional_brainmasks = glob(os.path.join(anat_subdir, "*brainmask*.nii.gz"))
+        additional_json = glob(os.path.join(anat_subdir, "*desc-nondeid.json"))
         original_images.extend(additional_images)
+        original_images.extend(additional_brainmasks)  # Include brain masks with images
+        original_json_files.extend(additional_json)
+    
+    # Check if QC subdirectory exists (contains visualization files, not for restoration)
+    if os.path.exists(qc_subdir):
+        log_print(f"   Found QC visualization directory: {qc_subdir}")
+        qc_files = glob(os.path.join(qc_subdir, "*.png")) + glob(os.path.join(qc_subdir, "*.gif"))
+        log_print(f"   QC directory contains {len(qc_files)} visualization files (will be removed)")
         
     # Check if organized metadata subdirectory exists and scan it    
     if os.path.exists(metadata_subdir):
         log_print(f"   Checking organized metadata subdirectory: {metadata_subdir}")
-        additional_json = glob(os.path.join(metadata_subdir, "*desc-nondeid.json"))
-        original_json_files.extend(additional_json)
+        additional_analysis_json = glob(os.path.join(metadata_subdir, "*.json"))
+        # Only add non-desc-nondeid JSON files (these are analysis/task-level files)
+        additional_analysis_json = [f for f in additional_analysis_json if 'desc-nondeid' not in f]
+        original_json_files.extend(additional_analysis_json)
     
     # Find current defaced/modified files in main BIDS structure that need to be replaced
     # These are the anonymized files that will be removed and replaced with originals
@@ -1029,7 +1218,7 @@ def revert_bidsonym(bids_dir, subject_label, session=None, confirm=True):
             
             # Determine where this file should go in the BIDS structure
             # This logic handles files from both organized and unorganized sourcedata
-            if "images/" in original_img:
+            if "anat/" in original_img:  # Changed from "images/" to "anat/"
                 # File is in organized structure - extract just the filename
                 relative_path = restored_basename
             else:
@@ -1122,7 +1311,7 @@ def revert_bidsonym(bids_dir, subject_label, session=None, confirm=True):
                 os.rmdir(bidsonym_dir)
                 log_print(f"   Removed empty directory: {bidsonym_dir}")
                 
-                # Check if sourcedata directory is now empty
+                # Check if sourcedata is now empty
                 sourcedata_dir = os.path.join(bids_dir, "sourcedata")
                 if os.path.exists(sourcedata_dir) and not os.listdir(sourcedata_dir):
                     os.rmdir(sourcedata_dir)
