@@ -8,7 +8,6 @@ from shutil import move
 import nipype.pipeline.engine as pe
 from nipype import Function
 from nipype.interfaces import utility as niu
-from nipype.interfaces.fsl import BET
 
 from bidsonym.reports import setup_logging
 
@@ -56,7 +55,6 @@ def copy_no_deid(bids_dir, subject_label, image_file, session=None):
     """
     
     import os
-    import json
     from shutil import copy2
     from os.path import join as opj
     
@@ -233,7 +231,7 @@ def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None, mod
     metadata_results = []
     
     # Process each JSON metadata file
-    print(f'\nProcessing JSON metadata files...')
+    print('\nProcessing JSON metadata files...')
     for meta_file in list_meta_files:
         print(f'\nChecking: {os.path.basename(meta_file)}')
         
@@ -319,7 +317,7 @@ def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None, mod
     
     # Generate summary report
     print(f'\n{"="*60}')
-    print(f'METADATA CHECK SUMMARY')
+    print('METADATA CHECK SUMMARY')
     print(f'{"="*60}')
     
     if metadata_results:
@@ -350,13 +348,13 @@ def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None, mod
         df.to_csv(csv_path, index=False)
         print(f'\nResults saved to: {csv_path}')
         
-        print(f'\nWARNING: Found potentially identifying information!')
-        print(f'   Please review the results and consider removing or anonymizing')
-        print(f'   the identified fields before sharing this data.')
+        print('\nWARNING: Found potentially identifying information!')
+        print('   Please review the results and consider removing or anonymizing')
+        print('   the identified fields before sharing this data.')
         
     else:
-        print(f'SUCCESS: No potentially identifying metadata fields found.')
-        print(f'   The checked files appear to be properly de-identified.')
+        print('SUCCESS: No potentially identifying metadata fields found.')
+        print('   The checked files appear to be properly de-identified.')
     
     print(f'{"="*60}')
 
@@ -617,6 +615,7 @@ def run_brain_extraction_bet(image, frac, subject_label, bids_dir, session=None)
     """
 
     import os
+    from nipype.interfaces.fsl import BET
 
     # Create output directory in anat subdirectory
     if session is not None:
@@ -636,45 +635,34 @@ def run_brain_extraction_bet(image, frac, subject_label, bids_dir, session=None)
     
     outfile = os.path.join(output_dir, mask_basename)
 
-    # Create a Nipype workflow for FSL BET brain extraction
-    brainextraction_wf = pe.Workflow('brainextraction_wf')
-    
-    # Create an input node to handle input data
-    inputnode = pe.Node(niu.IdentityInterface(['in_file']),
-                        name='inputnode')
-    
-    # Create a BET (Brain Extraction Tool) node from FSL
-    # mask=True means we want a binary mask, not the brain-extracted image
-    bet = pe.Node(BET(mask=True), name='bet')
-    
-    # Connect the input node to the BET node
-    brainextraction_wf.connect([
-        (inputnode, bet, [('in_file', 'in_file')])
-    ])
-    
-    # Set the input data
-    inputnode.inputs.in_file = image
-    
-    # Set the fractional intensity threshold for BET
+    # Create and run BET directly without complex workflow
+    bet = BET()
+    bet.inputs.in_file = image
     bet.inputs.frac = float(frac)
-    
-    # Set the output file path for the brain mask
+    bet.inputs.mask = True  # Generate binary mask
     bet.inputs.out_file = outfile.replace('.nii.gz', '')  # BET adds .nii.gz automatically
     
-    # Execute the workflow
-    result = brainextraction_wf.run()
-    
-    # Get the actual output file path from BET results
-    bet_node = result.nodes()[1]  # BET node is second in workflow
-    actual_mask_file = bet_node.result.outputs.mask_file
-    
-    # Rename to our desired naming convention if different
-    if actual_mask_file != outfile:
-        os.rename(actual_mask_file, outfile)
-    
-    print(f"Created brain mask: {outfile}")
-    return outfile
-
+    try:
+        # Execute BET directly
+        result = bet.run()
+        
+        # Get the actual output file path from BET results
+        actual_mask_file = result.outputs.mask_file
+        
+        # Rename to our desired naming convention if different
+        if actual_mask_file != outfile:
+            if os.path.exists(actual_mask_file):
+                os.rename(actual_mask_file, outfile)
+        
+        print(f"Created brain mask: {outfile}")
+        return outfile
+        
+    except Exception as e:
+        print(f"Error running BET brain extraction: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+        
 
 def validate_input_dir(exec_env, bids_dir, participant_label):
     """
