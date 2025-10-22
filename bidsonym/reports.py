@@ -2,10 +2,6 @@
 import os
 from datetime import datetime
 
-import nipype.pipeline.engine as pe
-from nipype import Function
-from nipype.interfaces import utility as niu
-
 
 def setup_logging(bids_dir, subject_label, session=None, 
                   operation="bidsonymrevert"):
@@ -115,29 +111,28 @@ def plot_brainmask_overlay(bids_dir, subject_label, session=None, t2w=None):
     # Initialize BIDS layout to query dataset structure
     layout = BIDSLayout(bids_dir)
     
-    # Define path to BIDSonym sourcedata directory for this subject
+    # Define paths - brain masks are in anat subdirectory
     if session is not None:
-        bidsonym_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/ses-{session}')
+        anat_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/ses-{session}/anat')
         qc_output_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/ses-{session}/QC')
     else:
-        bidsonym_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}')
+        anat_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/anat')
         qc_output_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/QC')
 
-    print(f"DEBUG: Looking for brain masks in: {bidsonym_path}")
+    print(f"DEBUG: Looking for brain masks in: {anat_path}")
     print(f"DEBUG: QC outputs will be saved to: {qc_output_path}")
 
     # Ensure output directories exist
-    os.makedirs(bidsonym_path, exist_ok=True)
     os.makedirs(qc_output_path, exist_ok=True)
 
-    # List all files in sourcedata to see what's available
-    if os.path.exists(bidsonym_path):
-        all_files = os.listdir(bidsonym_path)
+    # List all files in anat directory to see what's available
+    if os.path.exists(anat_path):
+        all_files = os.listdir(anat_path)
         brain_mask_files = [f for f in all_files if 'brainmask' in f and '.nii.gz' in f]
-        print(f"DEBUG: All files in sourcedata: {all_files}")
-        print(f"DEBUG: Brain mask files found: {brain_mask_files}")
+        print(f"DEBUG: All files in anat directory: {all_files}")
+        print(f"DEBUG: Brain mask files found in anat: {brain_mask_files}")
     else:
-        print(f"DEBUG: Sourcedata directory does not exist: {bidsonym_path}")
+        print(f"DEBUG: Anat directory does not exist: {anat_path}")
         return (None, t2w)
 
     # Query for T1w images based on session specification
@@ -165,33 +160,28 @@ def plot_brainmask_overlay(bids_dir, subject_label, session=None, t2w=None):
         print(f"DEBUG: Processing T1w: {os.path.basename(t1w)}")
         
         # Updated brain mask filename construction to match the actual naming pattern
-        # Based on brain_extraction functions, the pattern is: original_name + '_brainmask_desc-nondeid.nii.gz'
         t1w_basename = os.path.basename(t1w)
-        # Remove the .nii.gz extension and add brainmask suffix
         brain_mask_filename = t1w_basename.replace('.nii.gz', '_brainmask_desc-nondeid.nii.gz')
         
         print(f"DEBUG: Looking for brain mask: {brain_mask_filename}")
         
-        # Look for the brain mask - try multiple approaches
-        brainmask_t1w = opj(bidsonym_path, brain_mask_filename)
+        # Look for the brain mask in the anat directory
+        brainmask_t1w = opj(anat_path, brain_mask_filename)
         
         if not os.path.exists(brainmask_t1w):
-            print(f"DEBUG: Direct path not found, trying alternative patterns...")
+            print("DEBUG: Direct path not found, trying alternative patterns in anat directory...")
             
-            # Try different naming patterns that might exist
+            # Try different naming patterns that might exist in anat directory
             alternative_patterns = [
-                # Pattern 1: Try without desc-nondeid
                 t1w_basename.replace('.nii.gz', '_brainmask.nii.gz'),
-                # Pattern 2: Try with just brainmask prefix
                 t1w_basename.replace('.nii.gz', '_brain.nii.gz'),
-                # Pattern 3: Try with mask suffix
                 t1w_basename.replace('.nii.gz', '_mask.nii.gz'),
             ]
             
             found_mask = None
             for pattern in alternative_patterns:
-                test_path = opj(bidsonym_path, pattern)
-                print(f"DEBUG: Testing pattern: {pattern}")
+                test_path = opj(anat_path, pattern)
+                print(f"DEBUG: Testing pattern in anat: {pattern}")
                 if os.path.exists(test_path):
                     found_mask = test_path
                     print(f"DEBUG: Found brain mask with alternative pattern: {pattern}")
@@ -200,22 +190,24 @@ def plot_brainmask_overlay(bids_dir, subject_label, session=None, t2w=None):
             if found_mask:
                 brainmask_t1w = found_mask
             else:
-                # Try recursive search with wildcards
-                print(f"DEBUG: Trying recursive search for brain mask...")
+                # Try recursive search in anat directory with wildcards
+                print("DEBUG: Trying recursive search for brain mask in anat directory...")
                 recursive_patterns = [
                     f"*{t1w_basename.replace('.nii.gz', '')}*brainmask*.nii.gz",
-                    f"*{t1w_basename.split('_')[0]}*brainmask*.nii.gz",  # Match by subject
+                    f"*{t1w_basename.split('_')[0]}*brainmask*.nii.gz",
                 ]
                 
+                found_recursive = False
                 for pattern in recursive_patterns:
-                    recursive_search = glob(opj(bidsonym_path, '**', pattern), recursive=True)
-                    print(f"DEBUG: Recursive search for '{pattern}': {recursive_search}")
+                    recursive_search = glob(opj(anat_path, pattern))
+                    print(f"DEBUG: Recursive search in anat for '{pattern}': {recursive_search}")
                     if recursive_search:
                         brainmask_t1w = recursive_search[0]
                         print(f"DEBUG: Found brain mask via recursive search: {brainmask_t1w}")
+                        found_recursive = True
                         break
                 
-                if not recursive_search:
+                if not found_recursive:
                     print(f"DEBUG: No brain mask found for {t1w_basename}, skipping...")
                     continue
         else:
@@ -235,19 +227,19 @@ def plot_brainmask_overlay(bids_dir, subject_label, session=None, t2w=None):
                 
                 # Plot brain mask overlaid on defaced T1w image
                 plot_stat_map(
-                    brainmask_t1w,           # Specific brain mask for this image
-                    bg_img=t1w,              # Defaced T1w as background
-                    display_mode=direction,   # Anatomical direction
-                    cut_coords=cuts,         # Slice positions
-                    annotate=False,          # No anatomical annotations
-                    dim=-1,                  # Dim background slightly
-                    axes=ax,                 # Use specific subplot
-                    colorbar=False           # No colorbar
+                    brainmask_t1w,
+                    bg_img=t1w,
+                    display_mode=direction,
+                    cut_coords=cuts,
+                    annotate=False,
+                    dim=-1,
+                    axes=ax,
+                    colorbar=False
                 )
             
-            # Save the plot to QC directory instead of session root
+            # Save the plot to QC directory
             output_filename = t1w_basename.replace('.nii.gz', '_desc-brainmaskdeid.png')
-            output_path = opj(qc_output_path, output_filename)  # Changed to QC directory
+            output_path = opj(qc_output_path, output_filename)
             
             plt.savefig(output_path, dpi=150, bbox_inches='tight')
             plt.close()
@@ -259,9 +251,9 @@ def plot_brainmask_overlay(bids_dir, subject_label, session=None, t2w=None):
             print(f"ERROR: Failed to create brain mask overlay for {t1w}: {e}")
             import traceback
             traceback.print_exc()
-            plt.close()  # Ensure figure is closed even on error
+            plt.close()
 
-    # Process FLAIR images with same QC directory fix
+    # Process T2w/FLAIR images if requested
     if t2w is not None:
         print(f"DEBUG: Processing FLAIR images (t2w={t2w})")
         if session is not None:
@@ -282,18 +274,18 @@ def plot_brainmask_overlay(bids_dir, subject_label, session=None, t2w=None):
 
         print(f"DEBUG: Found {len(defaced_flair)} FLAIR images: {[os.path.basename(f) for f in defaced_flair]}")
 
-        # Process each FLAIR image found (same logic as T1w)
+        # Process each FLAIR image found
         for flair in defaced_flair:
             print(f"DEBUG: Processing FLAIR: {os.path.basename(flair)}")
             
-            # Similar brain mask search logic for FLAIR
+            # Similar brain mask search logic for FLAIR in anat directory
             flair_basename = os.path.basename(flair)
             brain_mask_filename = flair_basename.replace('.nii.gz', '_brainmask_desc-nondeid.nii.gz')
             
-            brainmask_flair = opj(bidsonym_path, brain_mask_filename)
+            brainmask_flair = opj(anat_path, brain_mask_filename)
             
             if not os.path.exists(brainmask_flair):
-                # Try alternative patterns for FLAIR as well
+                # Try alternative patterns for FLAIR in anat directory
                 alternative_patterns = [
                     flair_basename.replace('.nii.gz', '_brainmask.nii.gz'),
                     flair_basename.replace('.nii.gz', '_brain.nii.gz'),
@@ -302,7 +294,7 @@ def plot_brainmask_overlay(bids_dir, subject_label, session=None, t2w=None):
                 
                 found_mask = None
                 for pattern in alternative_patterns:
-                    test_path = opj(bidsonym_path, pattern)
+                    test_path = opj(anat_path, pattern)
                     if os.path.exists(test_path):
                         found_mask = test_path
                         break
@@ -310,7 +302,7 @@ def plot_brainmask_overlay(bids_dir, subject_label, session=None, t2w=None):
                 if found_mask:
                     brainmask_flair = found_mask
                 else:
-                    recursive_search = glob(opj(bidsonym_path, '**', f"*{flair_basename.replace('.nii.gz', '')}*brainmask*.nii.gz"), recursive=True)
+                    recursive_search = glob(opj(anat_path, f"*{flair_basename.replace('.nii.gz', '')}*brainmask*.nii.gz"))
                     if recursive_search:
                         brainmask_flair = recursive_search[0]
                     else:
@@ -339,7 +331,7 @@ def plot_brainmask_overlay(bids_dir, subject_label, session=None, t2w=None):
                 
                 # Save FLAIR plot to QC directory
                 output_filename = flair_basename.replace('.nii.gz', '_desc-brainmaskdeid.png')
-                output_path = opj(qc_output_path, output_filename)  # Changed to QC directory
+                output_path = opj(qc_output_path, output_filename)
                 
                 plt.savefig(output_path, dpi=150, bbox_inches='tight')
                 plt.close()
@@ -363,28 +355,6 @@ def gif_defaced(bids_dir, subject_label, session=None, t2w=None):
     """
     Create animated GIFs that loop through slices of defaced images in
     orthogonal directions (x, y, z).
-
-    This function generates animated visualizations of the defaced images
-    to provide a comprehensive view of the defacing quality across all
-    slices in each anatomical direction.
-
-    Parameters
-    ----------
-    bids_dir : str
-        Path to BIDS root directory.
-    subject_label : str
-        Label of subject to be processed (without 'sub-' prefix).
-    session : str, optional
-        If multiple sessions exist, create one GIF per session.
-        If None, processes all sessions for the subject.
-    t2w : bool, optional
-        If True and T2w images exist, create GIFs for T2w images as well.
-
-    Notes
-    -----
-    The generated GIFs are initially created in the subject's anatomical
-    directory and then moved to the BIDSonym sourcedata directory for
-    organization and storage.
     """
     
     # Import required modules within function for Nipype compatibility
@@ -398,11 +368,11 @@ def gif_defaced(bids_dir, subject_label, session=None, t2w=None):
     # Initialize BIDS layout to query dataset structure
     layout = BIDSLayout(bids_dir)
     
-    # Define path to BIDSonym sourcedata directory for this subject
+    # Define paths - GIFs should go to QC directory
     if session is not None:
-        bidsonym_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/ses-{session}')
+        qc_output_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/ses-{session}/QC')
     else:
-        bidsonym_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}')
+        qc_output_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/QC')
 
     # Query for T1w images based on session specification
     if session is not None:
@@ -462,7 +432,7 @@ def gif_defaced(bids_dir, subject_label, session=None, t2w=None):
         except Exception as e:
             print(f"Warning: Could not create GIF for {t2_image}: {e}")
 
-    # Locate and move generated GIF files to BIDSonym directory
+    # Locate generated GIF files
     if session is not None:
         # Look for GIFs in session-specific anatomical directory
         gif_search_path = opj(
@@ -480,148 +450,21 @@ def gif_defaced(bids_dir, subject_label, session=None, t2w=None):
     
     list_gifs = glob(gif_search_path)
 
-    # Ensure the bidsonym directory exists
-    os.makedirs(bidsonym_path, exist_ok=True)
+    # Ensure the QC directory exists
+    os.makedirs(qc_output_path, exist_ok=True)
 
-    # Move all generated GIF files to BIDSonym sourcedata directory
+    # Move all generated GIF files to QC directory instead of session root
     for gif_file in list_gifs:
         try:
-            # Move GIF from original location to organized sourcedata location
-            move(gif_file, bidsonym_path)
-            print(f"Moved GIF: {os.path.basename(gif_file)} to {bidsonym_path}")
+            # Move GIF to QC directory
+            move(gif_file, qc_output_path)
+            print(f"Moved GIF: {os.path.basename(gif_file)} to {qc_output_path}")
         except Exception as e:
             print(f"Warning: Could not move GIF file {gif_file}: {e}")
 
     print(f"GIF generation completed for subject {subject_label}")
     if session:
         print(f"Session: {session}")
-
-
-def create_graphics(bids_dir, subject_label, session=None, modalities=['T1w']):
-    """
-    Setup and run the graphics workflow which creates static plots and
-    animated GIFs of defaced images for quality assessment.
-    """
-
-    # Validate modalities parameter
-    supported_modalities = ['T1w', 'T2w', 'FLAIR']
-    if not modalities or not isinstance(modalities, list):
-        print("Warning: No valid modalities selected. Defaulting to ['T1w'].")
-        modalities = ['T1w']
-    
-    # Filter to only supported modalities
-    valid_modalities = [mod for mod in modalities if mod in supported_modalities]
-    if not valid_modalities:
-        print("Warning: No valid modalities found. Defaulting to ['T1w'].")
-        valid_modalities = ['T1w']
-
-    # Create Nipype workflow for graphics generation
-    report_wf = pe.Workflow('report_wf')
-
-    # Define input node with all required parameters
-    inputnode = pe.Node(
-        niu.IdentityInterface(fields=['bids_dir', 'subject_label', 'session', 'modalities']),
-        name='inputnode'
-    )
-    
-    # Create node to find original and defaced image pairs
-    find_images = pe.Node(
-        Function(
-            input_names=['bids_dir', 'subject_label', 'session', 'modalities'],
-            output_names=['original_images', 'defaced_images', 'output_paths'],
-            function=find_image_pairs
-        ),
-        name='find_images'
-    )
-    
-    # Create node for brain mask overlay plots
-    plt_brainmask = pe.Node(
-        Function(
-            input_names=['bids_dir', 'subject_label', 'session', 't2w'],
-            output_names=['t1w_files', 't2w_flag'],
-            function=plot_brainmask_overlay
-        ),
-        name='plt_brainmask'
-    )
-    
-    # Create node for before/after comparison plots
-    plt_comparison = pe.MapNode(
-        Function(
-            input_names=['image', 'mask', 'outfile', 'bids_dir'],
-            output_names=['out_file'],
-            function=plot_defaced_comparison
-        ),
-        name='plt_comparison',
-        iterfield=['image', 'mask', 'outfile']
-    )
-    
-    # Create node for GIF generation
-    gf_defaced = pe.Node(
-        Function(
-            input_names=['bids_dir', 'subject_label', 'session', 't2w'],
-            function=gif_defaced
-        ),
-        name='gf_defaced'
-    )
-
-    # Connect the workflow nodes
-    report_wf.connect([
-        # Connect inputs to find_images node
-        (inputnode, find_images, [
-            ('bids_dir', 'bids_dir'),
-            ('subject_label', 'subject_label'),
-            ('modalities', 'modalities')
-        ]),
-        
-        # Connect find_images output to comparison plots
-        (find_images, plt_comparison, [
-            ('original_images', 'image'),
-            ('defaced_images', 'mask'),
-            ('output_paths', 'outfile')
-        ]),
-        (inputnode, plt_comparison, [('bids_dir', 'bids_dir')]),
-        
-        # Connect inputs for brain mask overlay plots
-        (inputnode, plt_brainmask, [
-            ('bids_dir', 'bids_dir'),
-            ('subject_label', 'subject_label')
-        ]),
-        
-        # Connect inputs for GIF generation
-        (inputnode, gf_defaced, [
-            ('bids_dir', 'bids_dir'),
-            ('subject_label', 'subject_label')
-        ]),
-    ])
-
-    # Connect optional session input if provided
-    if session:
-        inputnode.inputs.session = session
-        report_wf.connect([
-            (inputnode, find_images, [('session', 'session')]),
-            (inputnode, plt_brainmask, [('session', 'session')]),
-            (inputnode, gf_defaced, [('session', 'session')]),
-        ])
-
-    # Set t2w parameter based on modalities
-    t2w_requested = any(mod in ['T2w', 'FLAIR'] for mod in valid_modalities)
-    plt_brainmask.inputs.t2w = t2w_requested if t2w_requested else None
-    gf_defaced.inputs.t2w = t2w_requested if t2w_requested else None
-
-    # Set all workflow inputs
-    inputnode.inputs.bids_dir = bids_dir
-    inputnode.inputs.subject_label = subject_label
-    inputnode.inputs.modalities = valid_modalities
-    
-    # Display processing information
-    print(f"Starting graphics workflow for subject {subject_label}")
-    if session:
-        print(f"Processing session: {session}")
-    print(f"Processing modalities: {valid_modalities}")
-    
-    # Execute the complete workflow
-    report_wf.run()
-    print("Graphics workflow completed successfully")
 
 
 def find_image_pairs(bids_dir, subject_label, session=None, modalities=['T1w']):
@@ -653,13 +496,16 @@ def find_image_pairs(bids_dir, subject_label, session=None, modalities=['T1w']):
     # Initialize BIDS layout
     layout = BIDSLayout(bids_dir)
     
-    # Define paths
+    # Define paths - original images are in anat subdirectory, outputs go to QC
     if session is not None:
-        sourcedata_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/ses-{session}')
-        output_base = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/ses-{session}')
+        sourcedata_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/ses-{session}/anat')
+        output_base = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/ses-{session}/QC')
     else:
-        sourcedata_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}')
-        output_base = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}')
+        sourcedata_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/anat')
+        output_base = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/QC')
+    
+    # Ensure QC directory exists
+    os.makedirs(output_base, exist_ok=True)
     
     original_images = []
     defaced_images = []
@@ -684,78 +530,232 @@ def find_image_pairs(bids_dir, subject_label, session=None, modalities=['T1w']):
                 return_type='filename'
             )
         
-        # Find corresponding original files in sourcedata
+        print(f"DEBUG: Found {len(defaced_files)} defaced {modality} files")
+        
+        # Find corresponding original files in sourcedata anat directory
         for defaced_file in defaced_files:
             # Extract filename components
             basename = os.path.basename(defaced_file)
             original_filename = basename.replace('.nii.gz', '_desc-nondeid.nii.gz')
             
-            # Look for original file
+            # Look for original file in anat directory
             original_file = opj(sourcedata_path, original_filename)
+            
+            print(f"DEBUG: Looking for original file: {original_file}")
             
             if os.path.exists(original_file):
                 original_images.append(original_file)
                 defaced_images.append(defaced_file)
                 
-                # Create output path for comparison plot
+                # Create output path for comparison plot in QC directory
                 comparison_filename = basename.replace('.nii.gz', '_desc-comparison.png')
                 output_path = opj(output_base, comparison_filename)
                 output_paths.append(output_path)
+                
+                print(f"DEBUG: Added image pair: {os.path.basename(original_file)} -> {os.path.basename(defaced_file)}")
+            else:
+                print(f"DEBUG: Original file not found: {original_filename}")
     
+    print(f"DEBUG: Found {len(original_images)} image pairs total")
     return original_images, defaced_images, output_paths
 
 
 def plot_defaced_comparison(image, mask, outfile, bids_dir=None):
     """
-    Plot defaced image with before/after comparison.
-
+    Plot before/after comparison of defacing results.
+    
     Parameters
     ----------
     image : str
-        Path to original image.
+        Path to original (non-defaced) image.
     mask : str
-        Path to defaced/masked image.
+        Path to defaced image.
     outfile : str
-        Path for output plot.
+        Path for output comparison plot.
     bids_dir : str, optional
-        Path to BIDS root directory (for logging purposes).
+        BIDS directory path (for compatibility).
+        
+    Returns
+    -------
+    str
+        Path to the created output file.
     """
     
-    # Import required modules within function for Nipype compatibility
+    # Import all required modules within the function for Nipype compatibility
+    import os
     import matplotlib.pyplot as plt
-    import numpy as np
-    from nibabel import load
+    from matplotlib.pyplot import figure
+    from nilearn.plotting import plot_anat
     
-    # Load images
-    orig_img = load(image)
-    defaced_img = load(mask)
+    print("DEBUG: Creating comparison plot for:")
+    print(f"  Original: {os.path.basename(image) if image else 'None'}")
+    print(f"  Defaced: {os.path.basename(mask) if mask else 'None'}")
+    print(f"  Output: {os.path.basename(outfile) if outfile else 'None'}")
     
-    # Get data arrays
-    orig_data = orig_img.get_fdata()
-    defaced_data = defaced_img.get_fdata()
+    # Validate inputs
+    if not image or not os.path.exists(image):
+        print(f"ERROR: Original image not found or not provided: {image}")
+        return outfile
     
-    # Find middle slice in sagittal view (good for seeing face removal)
-    mid_slice = orig_data.shape[0] // 2
+    if not mask or not os.path.exists(mask):
+        print(f"ERROR: Defaced image not found or not provided: {mask}")
+        return outfile
     
-    # Create side-by-side comparison plot
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
+    if not outfile:
+        print("ERROR: Output file path not provided")
+        return outfile
     
-    # Plot original image
-    ax1.imshow(np.rot90(orig_data[mid_slice, :, :]), cmap='gray')
-    ax1.set_title('Original')
-    ax1.axis('off')
+    # Ensure output directory exists
+    os.makedirs(os.path.dirname(outfile), exist_ok=True)
     
-    # Plot defaced image
-    ax2.imshow(np.rot90(defaced_data[mid_slice, :, :]), cmap='gray')
-    ax2.set_title('Defaced')
-    ax2.axis('off')
+    try:
+        # Create figure with subplots for before/after comparison
+        fig = figure(figsize=(20, 10))
+        
+        # Plot original image (before defacing)
+        ax1 = fig.add_subplot(2, 3, 1)
+        plot_anat(image, display_mode='x', axes=ax1, title='Original (Sagittal)', annotate=False)
+        
+        ax2 = fig.add_subplot(2, 3, 2)
+        plot_anat(image, display_mode='y', axes=ax2, title='Original (Coronal)', annotate=False)
+        
+        ax3 = fig.add_subplot(2, 3, 3)
+        plot_anat(image, display_mode='z', axes=ax3, title='Original (Axial)', annotate=False)
+        
+        # Plot defaced image (after defacing)
+        ax4 = fig.add_subplot(2, 3, 4)
+        plot_anat(mask, display_mode='x', axes=ax4, title='Defaced (Sagittal)', annotate=False)
+        
+        ax5 = fig.add_subplot(2, 3, 5)
+        plot_anat(mask, display_mode='y', axes=ax5, title='Defaced (Coronal)', annotate=False)
+        
+        ax6 = fig.add_subplot(2, 3, 6)
+        plot_anat(mask, display_mode='z', axes=ax6, title='Defaced (Axial)', annotate=False)
+        
+        # Add overall title
+        fig.suptitle('Before and After Defacing Comparison', fontsize=16)
+        
+        # Adjust layout and save
+        plt.tight_layout()
+        plt.savefig(outfile, dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        print(f"DEBUG: Saved comparison plot: {outfile}")
+        return outfile
+        
+    except Exception as e:
+        print(f"ERROR: Failed to create comparison plot: {e}")
+        import traceback
+        traceback.print_exc()
+        plt.close()
+        return outfile
+
+
+def create_graphics(bids_dir, subject_label, session=None, modalities=['T1w']):
+    """
+    Setup and run the graphics workflow which creates static plots and
+    animated GIFs of defaced images for quality assessment.
+    """
+
+    # Import required modules within function for Nipype compatibility
+    from nipype.interfaces import utility as niu
+    from nipype.interfaces.utility import Function
+    import nipype.pipeline.engine as pe
+
+    # Validate modalities parameter
+    supported_modalities = ['T1w', 'T2w', 'FLAIR']
+    if not modalities or not isinstance(modalities, list):
+        print("Warning: No valid modalities selected. Defaulting to ['T1w'].")
+        modalities = ['T1w']
     
-    # Add title
-    fig.suptitle('Defacing Results Comparison')
+    # Filter to only supported modalities
+    valid_modalities = [mod for mod in modalities if mod in supported_modalities]
+    if not valid_modalities:
+        print("Warning: No valid modalities found. Defaulting to ['T1w'].")
+        valid_modalities = ['T1w']
+
+    print(f"Starting graphics workflow for subject {subject_label}")
+    if session:
+        print(f"Processing session: {session}")
+    print(f"Processing modalities: {valid_modalities}")
+
+    # Find image pairs for comparison
+    original_images, defaced_images, output_paths = find_image_pairs(
+        bids_dir, subject_label, session, valid_modalities
+    )
     
-    # Save the plot
-    plt.tight_layout()
-    plt.savefig(outfile, dpi=150, bbox_inches='tight')
-    plt.close()
-    
-    return outfile
+    if not original_images:
+        print(f"No image pairs found for comparison for subject {subject_label}")
+        if session:
+            print(f"Session: {session}")
+    else:
+        print(f"Creating {len(original_images)} comparison plots...")
+        
+        # Create comparison plots using Nipype workflow
+        comparison_wf = pe.Workflow('comparison_plots')
+        
+        # Create iterables for processing multiple image pairs
+        inputnode = pe.Node(niu.IdentityInterface([
+            'original_images', 
+            'defaced_images', 
+            'output_paths'
+        ]), name='inputnode')
+        
+        # Set the input lists
+        inputnode.inputs.original_images = original_images
+        inputnode.inputs.defaced_images = defaced_images
+        inputnode.inputs.output_paths = output_paths
+        
+        # Create plot comparison node with proper iterfields
+        plot_node = pe.MapNode(
+            Function(
+                input_names=['image', 'mask', 'outfile', 'bids_dir'],
+                output_names=['out_file'],
+                function=plot_defaced_comparison
+            ),
+            name='plt_comparison',
+            iterfield=['image', 'mask', 'outfile']
+        )
+        
+        # Set the bids_dir input
+        plot_node.inputs.bids_dir = bids_dir
+        
+        # Connect the workflow
+        comparison_wf.connect([
+            (inputnode, plot_node, [
+                ('original_images', 'image'),
+                ('defaced_images', 'mask'),
+                ('output_paths', 'outfile')
+            ])
+        ])
+        
+        # Run the workflow
+        try:
+            comparison_wf.run()
+            print(f"Successfully created {len(original_images)} comparison plots")
+        except Exception as e:
+            print(f"ERROR: Failed to create comparison plots: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # Create brain mask overlay plots
+    print("Creating brain mask overlay plots...")
+    try:
+        t2w_requested = any(mod in ['T2w', 'FLAIR'] for mod in valid_modalities)
+        plot_brainmask_overlay(bids_dir, subject_label, session, t2w_requested if t2w_requested else None)
+    except Exception as e:
+        print(f"ERROR: Failed to create brain mask overlays: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # Create animated GIFs
+    print("Creating animated GIFs...")
+    try:
+        t2w_requested = any(mod in ['T2w', 'FLAIR'] for mod in valid_modalities)
+        gif_defaced(bids_dir, subject_label, session, t2w_requested if t2w_requested else None)
+    except Exception as e:
+        print(f"ERROR: Failed to create GIFs: {e}")
+        import traceback
+        traceback.print_exc()
+
+    print("Graphics workflow completed successfully")

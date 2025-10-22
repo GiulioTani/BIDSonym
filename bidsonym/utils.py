@@ -593,7 +593,7 @@ def run_brain_extraction_nb(image, subject_label, bids_dir):
     brainextraction_wf.run()
 
 
-def run_brain_extraction_bet(image, frac, subject_label, bids_dir):
+def run_brain_extraction_bet(image, frac, subject_label, bids_dir, session=None):
     """
     Setup and FSLs brainextraction (BET) workflow.
 
@@ -603,55 +603,77 @@ def run_brain_extraction_bet(image, frac, subject_label, bids_dir):
         Path to image that should be defaced.
     frac : float
         Fractional intensity threshold (0 - 1).
-    outfile : str
-        Name of the defaced file.
+    subject_label : str
+        Label of subject (without 'sub-' prefix).
     bids_dir : str
         Path to BIDS root directory.
+    session : str, optional
+        Session label (without 'ses-' prefix).
+        
+    Returns
+    -------
+    str
+        Path to the created brain mask file.
     """
 
     import os
 
-    # Construct the output path for the brain-extracted image
-    # The output will be saved in the subject's backup directory with descriptive naming
-    # Extract the base filename and add brain mask identifier and non-deid descriptor
-    outfile = os.path.join(bids_dir, "sourcedata/bidsonym/sub-%s" % subject_label,
-                           image[image.rfind('/') + 1:image.rfind('.nii')] + '_brainmask_desc-nondeid.nii.gz')
+    # Create output directory in anat subdirectory
+    if session is not None:
+        output_dir = os.path.join(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', f'ses-{session}', 'anat')
+    else:
+        output_dir = os.path.join(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', 'anat')
+    
+    # Ensure the anat directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Create output filename for brain mask
+    input_basename = os.path.basename(image)
+    if '_desc-nondeid' in input_basename:
+        mask_basename = input_basename.replace('_desc-nondeid.nii.gz', '_brainmask_desc-nondeid.nii.gz')
+    else:
+        mask_basename = input_basename.replace('.nii.gz', '_brainmask_desc-nondeid.nii.gz')
+    
+    outfile = os.path.join(output_dir, mask_basename)
 
     # Create a Nipype workflow for FSL BET brain extraction
-    # BET (Brain Extraction Tool) is FSL's classic brain extraction algorithm
     brainextraction_wf = pe.Workflow('brainextraction_wf')
     
     # Create an input node to handle input data
-    # IdentityInterface passes data through without modification
-    # This serves as the entry point for data into the workflow
     inputnode = pe.Node(niu.IdentityInterface(['in_file']),
                         name='inputnode')
     
     # Create a BET (Brain Extraction Tool) node from FSL
-    # mask=False means we want the brain-extracted image, not just a binary mask
-    # BET uses intensity-based thresholding and morphological operations for brain extraction
-    bet = pe.Node(BET(mask=False), name='bet')
+    # mask=True means we want a binary mask, not the brain-extracted image
+    bet = pe.Node(BET(mask=True), name='bet')
     
     # Connect the input node to the BET node
-    # This creates a data flow: inputnode.in_file -> bet.in_file
     brainextraction_wf.connect([
         (inputnode, bet, [('in_file', 'in_file')])
     ])
     
-    # Set the input data - the path to the image file to be processed
+    # Set the input data
     inputnode.inputs.in_file = image
     
     # Set the fractional intensity threshold for BET
-    # This parameter controls how aggressively BET removes non-brain tissue
-    # Lower values (e.g., 0.1) = more conservative, higher values (e.g., 0.7) = more aggressive
     bet.inputs.frac = float(frac)
     
-    # Set the output file path for the brain-extracted image
-    bet.inputs.out_file = outfile
+    # Set the output file path for the brain mask
+    bet.inputs.out_file = outfile.replace('.nii.gz', '')  # BET adds .nii.gz automatically
     
     # Execute the workflow
-    # This runs the entire pipeline: input -> BET brain extraction -> output
-    brainextraction_wf.run()
+    result = brainextraction_wf.run()
+    
+    # Get the actual output file path from BET results
+    bet_node = result.nodes()[1]  # BET node is second in workflow
+    actual_mask_file = bet_node.result.outputs.mask_file
+    
+    # Rename to our desired naming convention if different
+    if actual_mask_file != outfile:
+        os.rename(actual_mask_file, outfile)
+    
+    print(f"Created brain mask: {outfile}")
+    return outfile
 
 
 def validate_input_dir(exec_env, bids_dir, participant_label):
