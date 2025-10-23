@@ -40,7 +40,7 @@ def check_outpath(bids_dir, subject_label):
 
 def copy_no_deid(bids_dir, subject_label, image_file, session=None):
     """
-    Copy original non-deidentified image and JSON files to sourcedata directory.
+    Copy original non-deidentified image and JSON files to session-aware sourcedata directory.
     
     Parameters
     ----------
@@ -59,7 +59,7 @@ def copy_no_deid(bids_dir, subject_label, image_file, session=None):
     from shutil import copy2
     from os.path import join as opj
     
-    # Create paths for organized structure - files should go to session-aware anat directory
+    # Create paths for session-aware organized structure - files should go to session-aware anat directory
     if session is not None:
         # For session-based datasets, create anat subdirectory within session
         output_dir = opj(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', f'ses-{session}', 'anat')
@@ -202,11 +202,13 @@ def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None, mod
         # Create DataFrame for better organization
         df = pd.DataFrame(metadata_results)
         
-        # Create output directory in session-aware meta_data_info structure
+        # Create output directory in session-aware meta_data_info structure ONLY
         if session is not None:
+            # Only save to session-specific directory when session exists
             output_dir = os.path.join(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', f'ses-{session}', 'meta_data_info')
             csv_filename = f'sub-{subject_label}_ses-{session}_metadata-check.csv'
         else:
+            # Only save to subject-level directory when no session
             output_dir = os.path.join(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', 'meta_data_info')
             csv_filename = f'sub-{subject_label}_metadata-check.csv'
         
@@ -487,7 +489,7 @@ def run_brain_extraction_bet(image, frac, subject_label, bids_dir, session=None)
     import os
     from nipype.interfaces.fsl import BET
 
-    # Create output directory in anat subdirectory
+    # Create output directory in session-aware anat subdirectory
     if session is not None:
         output_dir = os.path.join(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', f'ses-{session}', 'anat')
     else:
@@ -718,8 +720,8 @@ def deface_image(image, warped_mask, outfile):
 
 def clean_up_files(bids_dir, subject_label, session=None):
     """
-    Restructure BIDSonym outcomes following BIDS conventions.
-    This function may not need to move files if they're already in the correct locations.
+    Restructure BIDSonym outcomes following BIDS conventions with session-aware organization.
+    This function moves files that might be in the wrong locations to the correct subdirectories.
     """
     
     import os
@@ -732,66 +734,83 @@ def clean_up_files(bids_dir, subject_label, session=None):
         out_path_anat = os.path.join(session_path, "anat")
         out_path_qc = os.path.join(session_path, "QC")
         out_path_info = os.path.join(session_path, "meta_data_info")
+        
+        # Also check subject root for files that should be in session directories
+        subject_root = os.path.join(bids_dir, f"sourcedata/bidsonym/sub-{subject_label}")
     else:
         subject_path = os.path.join(bids_dir, f"sourcedata/bidsonym/sub-{subject_label}")
         out_path_anat = os.path.join(subject_path, "anat")
         out_path_qc = os.path.join(subject_path, "QC")
         out_path_info = os.path.join(subject_path, "meta_data_info")
+        subject_root = subject_path
 
     # Create output directories if they don't exist
     os.makedirs(out_path_anat, exist_ok=True)
     os.makedirs(out_path_qc, exist_ok=True)
     os.makedirs(out_path_info, exist_ok=True)
 
-    # Look for files that might be in the session/subject root instead of subdirectories
+    # Look for files that might be in the wrong locations
+    search_paths = [subject_root]
     if session is not None:
-        root_search_path = os.path.join(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/ses-{session}')
-    else:
-        root_search_path = os.path.join(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}')
+        # Also check the session root directory
+        search_paths.append(os.path.join(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/ses-{session}'))
 
-    # Find files that are in the root and should be moved to subdirectories
-    
-    # Find anatomical files (NIfTI and JSON with desc-nondeid) that are in root
-    root_nii_files = glob(os.path.join(root_search_path, '*desc-nondeid.nii.gz'))
-    root_json_files = glob(os.path.join(root_search_path, '*desc-nondeid.json'))
-    root_brainmask_files = glob(os.path.join(root_search_path, '*brainmask*.nii.gz'))
-    
-    # Move anatomical files from root to anat directory
-    anat_files_to_move = root_nii_files + root_json_files + root_brainmask_files
-    for anat_file in anat_files_to_move:
-        filename = os.path.basename(anat_file)
-        target_path = os.path.join(out_path_anat, filename)
-        if anat_file != target_path:  # Only move if not already in correct location
-            move(anat_file, target_path)
-            print(f"Moved {filename} to anat directory")
+    for search_path in search_paths:
+        if not os.path.exists(search_path):
+            continue
+            
+        print(f"Checking for misplaced files in: {search_path}")
 
-    # Find QC files (PNG and GIF) that are in root
-    root_png_files = glob(os.path.join(root_search_path, '*.png'))
-    root_gif_files = glob(os.path.join(root_search_path, '*.gif'))
-    
-    # Move QC files from root to QC directory
-    qc_files_to_move = root_png_files + root_gif_files
-    for qc_file in qc_files_to_move:
-        filename = os.path.basename(qc_file)
-        target_path = os.path.join(out_path_qc, filename)
-        if qc_file != target_path:  # Only move if not already in correct location
-            move(qc_file, target_path)
-            print(f"Moved {filename} to QC directory")
+        # Find anatomical files (NIfTI and JSON with desc-nondeid) that are in root
+        root_nii_files = glob(os.path.join(search_path, '*desc-nondeid.nii.gz'))
+        root_json_files = glob(os.path.join(search_path, '*desc-nondeid.json'))
+        root_brainmask_files = glob(os.path.join(search_path, '*brainmask*.nii.gz'))
+        
+        # Move anatomical files from root to anat directory
+        anat_files_to_move = root_nii_files + root_json_files + root_brainmask_files
+        for anat_file in anat_files_to_move:
+            filename = os.path.basename(anat_file)
+            target_path = os.path.join(out_path_anat, filename)
+            if anat_file != target_path:  # Only move if not already in correct location
+                try:
+                    move(anat_file, target_path)
+                    print(f"Moved {filename} to anat directory")
+                except Exception as e:
+                    print(f"Warning: Could not move {filename}: {e}")
 
-    # Find metadata info files (CSV) that are in root
-    root_csv_files = glob(os.path.join(root_search_path, '*.csv'))
-    root_other_json_files = glob(os.path.join(root_search_path, '*.json'))
-    # Filter out desc-nondeid JSON files (those go to anat)
-    root_other_json_files = [f for f in root_other_json_files if 'desc-nondeid' not in f]
-    
-    # Move metadata info files from root to meta_data_info directory
-    info_files_to_move = root_csv_files + root_other_json_files
-    for info_file in info_files_to_move:
-        filename = os.path.basename(info_file)
-        target_path = os.path.join(out_path_info, filename)
-        if info_file != target_path:  # Only move if not already in correct location
-            move(info_file, target_path)
-            print(f"Moved {filename} to meta_data_info directory")
+        # Find QC files (PNG and GIF) that are in root
+        root_png_files = glob(os.path.join(search_path, '*.png'))
+        root_gif_files = glob(os.path.join(search_path, '*.gif'))
+        
+        # Move QC files from root to QC directory
+        qc_files_to_move = root_png_files + root_gif_files
+        for qc_file in qc_files_to_move:
+            filename = os.path.basename(qc_file)
+            target_path = os.path.join(out_path_qc, filename)
+            if qc_file != target_path:  # Only move if not already in correct location
+                try:
+                    move(qc_file, target_path)
+                    print(f"Moved {filename} to QC directory")
+                except Exception as e:
+                    print(f"Warning: Could not move {filename}: {e}")
+
+        # Find metadata info files (CSV) that are in root
+        root_csv_files = glob(os.path.join(search_path, '*.csv'))
+        root_other_json_files = glob(os.path.join(search_path, '*.json'))
+        # Filter out desc-nondeid JSON files (those go to anat)
+        root_other_json_files = [f for f in root_other_json_files if 'desc-nondeid' not in f]
+        
+        # Move metadata info files from root to meta_data_info directory
+        info_files_to_move = root_csv_files + root_other_json_files
+        for info_file in info_files_to_move:
+            filename = os.path.basename(info_file)
+            target_path = os.path.join(out_path_info, filename)
+            if info_file != target_path:  # Only move if not already in correct location
+                try:
+                    move(info_file, target_path)
+                    print(f"Moved {filename} to meta_data_info directory")
+                except Exception as e:
+                    print(f"Warning: Could not move {filename}: {e}")
 
     print(f"File organization completed for subject {subject_label}")
     if session:

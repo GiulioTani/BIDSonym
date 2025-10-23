@@ -2,6 +2,10 @@
 import os
 from datetime import datetime
 
+import nipype.pipeline.engine as pe
+from nipype import Function
+from nipype.interfaces import utility as niu
+
 
 def setup_logging(bids_dir, subject_label, session=None, 
                   operation="bidsonymrevert"):
@@ -111,7 +115,7 @@ def plot_brainmask_overlay(bids_dir, subject_label, session=None, t2w=None):
     # Initialize BIDS layout to query dataset structure
     layout = BIDSLayout(bids_dir)
     
-    # Define paths - brain masks are in anat subdirectory
+    # Define paths - brain masks are in session-aware anat subdirectory
     if session is not None:
         anat_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/ses-{session}/anat')
         qc_output_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/ses-{session}/QC')
@@ -252,98 +256,6 @@ def plot_brainmask_overlay(bids_dir, subject_label, session=None, t2w=None):
             import traceback
             traceback.print_exc()
             plt.close()
-
-    # Process T2w/FLAIR images if requested
-    if t2w is not None:
-        print(f"DEBUG: Processing FLAIR images (t2w={t2w})")
-        if session is not None:
-            defaced_flair = layout.get(
-                subject=subject_label, 
-                extension='nii.gz', 
-                suffix='FLAIR',
-                return_type='filename', 
-                session=session
-            )
-        else:
-            defaced_flair = layout.get(
-                subject=subject_label, 
-                extension='nii.gz', 
-                suffix='FLAIR',
-                return_type='filename'
-            )
-
-        print(f"DEBUG: Found {len(defaced_flair)} FLAIR images: {[os.path.basename(f) for f in defaced_flair]}")
-
-        # Process each FLAIR image found
-        for flair in defaced_flair:
-            print(f"DEBUG: Processing FLAIR: {os.path.basename(flair)}")
-            
-            # Similar brain mask search logic for FLAIR in anat directory
-            flair_basename = os.path.basename(flair)
-            brain_mask_filename = flair_basename.replace('.nii.gz', '_brainmask_desc-nondeid.nii.gz')
-            
-            brainmask_flair = opj(anat_path, brain_mask_filename)
-            
-            if not os.path.exists(brainmask_flair):
-                # Try alternative patterns for FLAIR in anat directory
-                alternative_patterns = [
-                    flair_basename.replace('.nii.gz', '_brainmask.nii.gz'),
-                    flair_basename.replace('.nii.gz', '_brain.nii.gz'),
-                    flair_basename.replace('.nii.gz', '_mask.nii.gz'),
-                ]
-                
-                found_mask = None
-                for pattern in alternative_patterns:
-                    test_path = opj(anat_path, pattern)
-                    if os.path.exists(test_path):
-                        found_mask = test_path
-                        break
-                
-                if found_mask:
-                    brainmask_flair = found_mask
-                else:
-                    recursive_search = glob(opj(anat_path, f"*{flair_basename.replace('.nii.gz', '')}*brainmask*.nii.gz"))
-                    if recursive_search:
-                        brainmask_flair = recursive_search[0]
-                    else:
-                        print(f"DEBUG: No brain mask found for FLAIR {flair_basename}, skipping...")
-                        continue
-            
-            try:
-                # Same plotting logic as T1w
-                fig = figure(figsize=(15, 5))
-                plt.subplots_adjust(left=0, bottom=0, right=1, top=1, wspace=-0.2, hspace=0)
-                
-                for i, direction in enumerate(['x', 'y', 'z']):
-                    ax = fig.add_subplot(1, 3, i + 1)
-                    cuts = find_cut_slices(flair, direction=direction, n_cuts=12)
-                    
-                    plot_stat_map(
-                        brainmask_flair,
-                        bg_img=flair,
-                        display_mode=direction,
-                        cut_coords=cuts,
-                        annotate=False,
-                        dim=-1,
-                        axes=ax,
-                        colorbar=False
-                    )
-                
-                # Save FLAIR plot to QC directory
-                output_filename = flair_basename.replace('.nii.gz', '_desc-brainmaskdeid.png')
-                output_path = opj(qc_output_path, output_filename)
-                
-                plt.savefig(output_path, dpi=150, bbox_inches='tight')
-                plt.close()
-                
-                plots_created += 1
-                print(f"DEBUG: Saved FLAIR brain mask overlay plot: {output_path}")
-                
-            except Exception as e:
-                print(f"ERROR: Failed to create FLAIR brain mask overlay for {flair}: {e}")
-                import traceback
-                traceback.print_exc()
-                plt.close()
 
     print(f"DEBUG: Created {plots_created} brain mask overlay plots total")
     
@@ -496,7 +408,7 @@ def find_image_pairs(bids_dir, subject_label, session=None, modalities=['T1w']):
     # Initialize BIDS layout
     layout = BIDSLayout(bids_dir)
     
-    # Define paths - original images are in anat subdirectory, outputs go to QC
+    # Define paths - original images are in session-aware anat subdirectory, outputs go to QC
     if session is not None:
         sourcedata_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/ses-{session}/anat')
         output_base = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/ses-{session}/QC')
