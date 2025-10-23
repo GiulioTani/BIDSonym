@@ -55,10 +55,11 @@ def copy_no_deid(bids_dir, subject_label, image_file, session=None):
     """
     
     import os
+    import json
     from shutil import copy2
     from os.path import join as opj
     
-    # Create paths for organized structure - files should go to anat directory
+    # Create paths for organized structure - files should go to session-aware anat directory
     if session is not None:
         # For session-based datasets, create anat subdirectory within session
         output_dir = opj(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', f'ses-{session}', 'anat')
@@ -94,23 +95,25 @@ def copy_no_deid(bids_dir, subject_label, image_file, session=None):
 
 def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None, modalities=None):
     """
-    Extract meta-data from image headers and json files and
-    subsequently evaluate values based on default keys or
-    user specified keys. Outputs are csv files containing
-    DataFrames with keys, values and markers concerning values.
-
+    Check for potentially identifying metadata in JSON files.
+    
     Parameters
     ----------
     bids_dir : str
         Path to BIDS root directory.
     subject_label : str
-        Label of subject to be checked (without 'sub-').
+        Label of subject (without 'sub-' prefix).
     prob_fields : list, optional
-        List of meta-data keys ('str') that should be evaluated.
+        List of fields to check for identifying information.
     session : str, optional
-        Session label (if applicable, without 'ses-').
+        Session label (without 'ses-' prefix).
     modalities : list, optional
-        List of modalities to process (e.g., ['T1w', 'T2w', 'FLAIR']).
+        List of modalities to check.
+    
+    Returns
+    -------
+    bool
+        True if potentially identifying metadata found, False otherwise.
     """
     
     import os
@@ -119,222 +122,88 @@ def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None, mod
     from glob import glob
     from bids import BIDSLayout
     
-    # Initialize BIDS layout for structured querying
-    layout = BIDSLayout(bids_dir)
-    
-    # Default modalities if none specified
-    if modalities is None:
-        modalities = ['T1w']
-    
-    # Default problematic fields to check if none specified
+    # Default problematic fields if none provided
     if prob_fields is None:
         prob_fields = [
-            'AcquisitionDate', 'AcquisitionTime', 'InstitutionName', 
-            'InstitutionAddress', 'StationName', 'ManufacturerModelName',
-            'DeviceSerialNumber', 'SoftwareVersions', 'StudyDate',
-            'StudyTime', 'SeriesDate', 'SeriesTime', 'StudyID',
+            'InstitutionName', 'InstitutionAddress', 'InstitutionalDepartmentName',
+            'StationName', 'DeviceSerialNumber', 'PatientName', 'PatientID',
+            'PatientBirthDate', 'PatientSex', 'PatientAge', 'PatientWeight',
             'StudyInstanceUID', 'SeriesInstanceUID', 'StudyDescription',
-            'SeriesDescription', 'PatientName', 'PatientID', 'PatientBirthDate',
-            'PatientSex', 'PatientAge', 'PatientWeight', 'PatientPosition'
+            'SeriesDescription', 'StudyID', 'AccessionNumber', 'ReferringPhysicianName',
+            'PatientPosition', 'ImageComments', 'AcquisitionDateTime',
+            'ContentDate', 'ContentTime', 'InstanceCreationDate', 'InstanceCreationTime'
         ]
     
-    print(f"\nChecking metadata for subject {subject_label}")
+    # Default modalities if none provided
+    if modalities is None:
+        modalities = ['T1w', 'T2w', 'FLAIR', 'dwi', 'func']
+    
+    print(f"Checking metadata for subject {subject_label}")
     if session:
         print(f"Session: {session}")
-    print(f"Modalities: {modalities}")
-    print(f"Checking for potentially identifying fields: {prob_fields}")
     
-    # Find NIfTI image files and JSON metadata files for the specified criteria
-    list_subject_image_files = []
-    list_sub_meta_files = []
+    # Initialize BIDS layout
+    layout = BIDSLayout(bids_dir)
     
-    for modality in modalities:
-        # Query BIDS layout for specific subject, session, and modality
-        if session is not None:
-            # Get images for specific session and modality
-            images = layout.get(
-                subject=subject_label,
-                session=session,
-                suffix=modality,
-                extension='nii.gz',
-                return_type='filename'
-            )
-            # Get JSON files for specific session and modality
-            json_files = layout.get(
-                subject=subject_label,
-                session=session,
-                suffix=modality,
-                extension='json',
-                return_type='filename'
-            )
-        else:
-            # Get images for all sessions of this subject and modality
-            images = layout.get(
-                subject=subject_label,
-                suffix=modality,
-                extension='nii.gz',
-                return_type='filename'
-            )
-            # Get JSON files for all sessions of this subject and modality
-            json_files = layout.get(
-                subject=subject_label,
-                suffix=modality,
-                extension='json',
-                return_type='filename'
-            )
-        
-        list_subject_image_files.extend(images)
-        list_sub_meta_files.extend(json_files)
+    # Find JSON files for this subject/session
+    if session is not None:
+        json_files = layout.get(
+            subject=subject_label,
+            session=session,
+            extension='json',
+            return_type='filename'
+        )
+    else:
+        json_files = layout.get(
+            subject=subject_label,
+            extension='json',
+            return_type='filename'
+        )
     
-    # Find dataset-level JSON metadata files (at root of BIDS directory)
-    list_task_meta_files = []
-    for modality in modalities:
-        if 'func' in modality or 'bold' in modality:
-            # For functional data, include task JSON files
-            task_files = glob(os.path.join(bids_dir, 'task-*_bold.json'))
-            list_task_meta_files.extend(task_files)
-        else:
-            # For anatomical data, check for modality-specific dataset files
-            dataset_files = glob(os.path.join(bids_dir, f'*_{modality}.json'))
-            list_task_meta_files.extend(dataset_files)
+    # Filter by modalities if specified
+    if modalities:
+        filtered_files = []
+        for json_file in json_files:
+            for modality in modalities:
+                if modality in json_file:
+                    filtered_files.append(json_file)
+                    break
+        json_files = filtered_files
     
-    # Combine dataset-level and subject/session-specific JSON files
-    list_meta_files = list_task_meta_files + list_sub_meta_files
+    print(f"Found {len(json_files)} JSON files to check")
     
-    # Remove duplicates while preserving order
-    list_meta_files = list(dict.fromkeys(list_meta_files))
-    
-    # Only proceed if we found relevant files
-    if not list_subject_image_files:
-        print(f'No {modalities} images found for subject {subject_label}')
-        if session:
-            print(f'in session {session}')
-        return
-    
-    if not list_meta_files:
-        print(f'No JSON metadata files found for subject {subject_label}')
-        if session:
-            print(f'in session {session}')
-        print(f'and modalities {modalities}')
-        return
-    
-    # Inform user about which files will be processed
-    print(f'\nFound {len(list_subject_image_files)} image files for processing:')
-    for img_file in list_subject_image_files:
-        print(f'  {os.path.basename(img_file)}')
-    
-    print(f'\nThe following {len(list_meta_files)} metadata files will be checked:')
-    for meta_file in list_meta_files:
-        print(f'  {os.path.basename(meta_file)}')
-
-    # Initialize results storage
+    # Check each JSON file for problematic fields
     metadata_results = []
     
-    # Process each JSON metadata file
-    print('\nProcessing JSON metadata files...')
-    for meta_file in list_meta_files:
-        print(f'\nChecking: {os.path.basename(meta_file)}')
+    for json_file in json_files:
+        print(f"Checking: {os.path.basename(json_file)}")
         
         try:
-            with open(meta_file, 'r') as f:
+            with open(json_file, 'r') as f:
                 metadata = json.load(f)
             
-            # Check each problematic field
-            for field in prob_fields:
-                if field in metadata:
-                    value = metadata[field]
-                    result = {
-                        'file': os.path.basename(meta_file),
+            # Check each field in the JSON file
+            for field, value in metadata.items():
+                if field in prob_fields:
+                    # Found a potentially identifying field
+                    metadata_results.append({
+                        'file': os.path.basename(json_file),
                         'field': field,
                         'value': str(value),
-                        'potentially_identifying': True
-                    }
-                    metadata_results.append(result)
-                    print(f'  WARNING: Found potentially identifying field: {field} = {value}')
-            
-            # Check for any other fields that might be identifying
-            identifying_keywords = ['patient', 'name', 'id', 'date', 'time', 'institution', 'address']
-            for key, value in metadata.items():
-                if key not in prob_fields:
-                    key_lower = key.lower()
-                    if any(keyword in key_lower for keyword in identifying_keywords):
-                        result = {
-                            'file': os.path.basename(meta_file),
-                            'field': key,
-                            'value': str(value),
-                            'potentially_identifying': True
-                        }
-                        metadata_results.append(result)
-                        print(f'  WARNING: Found additional potentially identifying field: {key} = {value}')
+                        'severity': 'HIGH' if field in ['PatientName', 'PatientID', 'PatientBirthDate'] else 'MEDIUM'
+                    })
+                    print(f"  WARNING: Found {field}: {value}")
         
         except Exception as e:
-            print(f'  ERROR: Error reading {meta_file}: {e}')
+            print(f"  ERROR: Could not read {json_file}: {e}")
     
-    # Process each image file's header metadata
-    print('\nProcessing image header metadata...')
-    for subject_image_file in list_subject_image_files:
-        print(f'\nChecking headers: {os.path.basename(subject_image_file)}')
-        
-        try:
-            from nibabel import load
-            img = load(subject_image_file)
-            header = img.header
-            
-            # Check NIfTI header fields
-            if hasattr(header, 'get_data_dtype'):
-                # Check description field
-                if hasattr(header, 'get_descrip'):
-                    descrip = header.get_descrip()
-                    if descrip and descrip.strip():
-                        result = {
-                            'file': os.path.basename(subject_image_file),
-                            'field': 'descrip',
-                            'value': str(descrip),
-                            'potentially_identifying': True
-                        }
-                        metadata_results.append(result)
-                        print(f'  WARNING: Found description in header: {descrip}')
-            
-            # Check for DICOM fields in NIfTI extensions
-            if hasattr(img, 'get_header') and hasattr(img.get_header(), 'extensions'):
-                extensions = img.get_header().extensions
-                for ext in extensions:
-                    if hasattr(ext, 'get_content'):
-                        content = str(ext.get_content())
-                        for field in prob_fields:
-                            if field in content:
-                                result = {
-                                    'file': os.path.basename(subject_image_file),
-                                    'field': f'extension_{field}',
-                                    'value': 'Found in NIfTI extension',
-                                    'potentially_identifying': True
-                                }
-                                metadata_results.append(result)
-                                print(f'  WARNING: Found {field} in NIfTI extension')
-        
-        except Exception as e:
-            print(f'  ERROR: Error reading headers from {subject_image_file}: {e}')
-    
-    # Generate summary report
-    print(f'\n{"="*60}')
-    print('METADATA CHECK SUMMARY')
-    print(f'{"="*60}')
-    
+    # Save results if any were found
     if metadata_results:
-        print(f'Found {len(metadata_results)} potentially identifying metadata fields:')
-        
         # Create DataFrame for better organization
         df = pd.DataFrame(metadata_results)
         
-        # Group by file for cleaner output
-        for filename in df['file'].unique():
-            file_results = df[df['file'] == filename]
-            print(f'\nFile: {filename}:')
-            for _, row in file_results.iterrows():
-                print(f'   {row["field"]}: {row["value"]}')
-        
-        # Save results to CSV in the proper meta_data_info directory
-        if session:
+        # Create output directory in session-aware meta_data_info structure
+        if session is not None:
             output_dir = os.path.join(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', f'ses-{session}', 'meta_data_info')
             csv_filename = f'sub-{subject_label}_ses-{session}_metadata-check.csv'
         else:
@@ -348,15 +217,16 @@ def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None, mod
         df.to_csv(csv_path, index=False)
         print(f'\nResults saved to: {csv_path}')
         
-        print('\nWARNING: Found potentially identifying information!')
-        print('   Please review the results and consider removing or anonymizing')
-        print('   the identified fields before sharing this data.')
+        print(f'\nWARNING: Found potentially identifying information!')
+        print(f'   Please review the results and consider removing or anonymizing')
+        print(f'   the identified fields before sharing this data.')
+        
+        return True
         
     else:
-        print('SUCCESS: No potentially identifying metadata fields found.')
-        print('   The checked files appear to be properly de-identified.')
-    
-    print(f'{"="*60}')
+        print(f'SUCCESS: No potentially identifying metadata fields found.')
+        print(f'   The checked files appear to be properly de-identified.')
+        return False
 
 
 def del_meta_data(bids_dir, subject_label, fields_del):

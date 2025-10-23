@@ -368,7 +368,7 @@ def gif_defaced(bids_dir, subject_label, session=None, t2w=None):
     # Initialize BIDS layout to query dataset structure
     layout = BIDSLayout(bids_dir)
     
-    # Define paths - GIFs should go to QC directory
+    # Define paths - GIFs should go to session-aware QC directory
     if session is not None:
         qc_output_path = opj(bids_dir, f'sourcedata/bidsonym/sub-{subject_label}/ses-{session}/QC')
     else:
@@ -432,7 +432,7 @@ def gif_defaced(bids_dir, subject_label, session=None, t2w=None):
         except Exception as e:
             print(f"Warning: Could not create GIF for {t2_image}: {e}")
 
-    # Locate generated GIF files
+    # Locate generated GIF files in the anat directory where they're created
     if session is not None:
         # Look for GIFs in session-specific anatomical directory
         gif_search_path = opj(
@@ -450,13 +450,13 @@ def gif_defaced(bids_dir, subject_label, session=None, t2w=None):
     
     list_gifs = glob(gif_search_path)
 
-    # Ensure the QC directory exists
+    # Ensure the session-aware QC directory exists
     os.makedirs(qc_output_path, exist_ok=True)
 
-    # Move all generated GIF files to QC directory instead of session root
+    # Move all generated GIF files to session-aware QC directory
     for gif_file in list_gifs:
         try:
-            # Move GIF to QC directory
+            # Move GIF to session-aware QC directory
             move(gif_file, qc_output_path)
             print(f"Moved GIF: {os.path.basename(gif_file)} to {qc_output_path}")
         except Exception as e:
@@ -563,6 +563,7 @@ def find_image_pairs(bids_dir, subject_label, session=None, modalities=['T1w']):
 def plot_defaced_comparison(image, mask, outfile, bids_dir=None):
     """
     Plot before/after comparison of defacing results.
+    Shows original image on left and defaced image on right with single sagittal cut.
     
     Parameters
     ----------
@@ -586,6 +587,7 @@ def plot_defaced_comparison(image, mask, outfile, bids_dir=None):
     import matplotlib.pyplot as plt
     from matplotlib.pyplot import figure
     from nilearn.plotting import plot_anat
+    import nibabel as nib
     
     print("DEBUG: Creating comparison plot for:")
     print(f"  Original: {os.path.basename(image) if image else 'None'}")
@@ -609,31 +611,43 @@ def plot_defaced_comparison(image, mask, outfile, bids_dir=None):
     os.makedirs(os.path.dirname(outfile), exist_ok=True)
     
     try:
-        # Create figure with subplots for before/after comparison
-        fig = figure(figsize=(20, 10))
+        # Load the original image to find the middle sagittal slice
+        img_nib = nib.load(image)
+        img_shape = img_nib.shape
         
-        # Plot original image (before defacing)
-        ax1 = fig.add_subplot(2, 3, 1)
-        plot_anat(image, display_mode='x', axes=ax1, title='Original (Sagittal)', annotate=False)
+        # Calculate middle sagittal slice (x-coordinate)
+        middle_x = img_shape[0] // 2
         
-        ax2 = fig.add_subplot(2, 3, 2)
-        plot_anat(image, display_mode='y', axes=ax2, title='Original (Coronal)', annotate=False)
+        # Create figure with two subplots side by side
+        fig = figure(figsize=(12, 6))
         
-        ax3 = fig.add_subplot(2, 3, 3)
-        plot_anat(image, display_mode='z', axes=ax3, title='Original (Axial)', annotate=False)
+        # Plot original image on the left (sagittal view at middle slice)
+        ax1 = fig.add_subplot(1, 2, 1)
+        plot_anat(
+            image, 
+            display_mode='x', 
+            cut_coords=[middle_x],
+            axes=ax1, 
+            title='Original', 
+            annotate=False,
+            draw_cross=False
+        )
         
-        # Plot defaced image (after defacing)
-        ax4 = fig.add_subplot(2, 3, 4)
-        plot_anat(mask, display_mode='x', axes=ax4, title='Defaced (Sagittal)', annotate=False)
+        # Plot defaced image on the right (sagittal view at same middle slice)
+        ax2 = fig.add_subplot(1, 2, 2)
+        plot_anat(
+            mask, 
+            display_mode='x', 
+            cut_coords=[middle_x],
+            axes=ax2, 
+            title='Defaced', 
+            annotate=False,
+            draw_cross=False
+        )
         
-        ax5 = fig.add_subplot(2, 3, 5)
-        plot_anat(mask, display_mode='y', axes=ax5, title='Defaced (Coronal)', annotate=False)
-        
-        ax6 = fig.add_subplot(2, 3, 6)
-        plot_anat(mask, display_mode='z', axes=ax6, title='Defaced (Axial)', annotate=False)
-        
-        # Add overall title
-        fig.suptitle('Before and After Defacing Comparison', fontsize=16)
+        # Add overall title with subject information
+        subject_info = os.path.basename(image).split('_')[0]  # Extract subject info
+        fig.suptitle(f'Defacing Comparison - {subject_info}', fontsize=14)
         
         # Adjust layout and save
         plt.tight_layout()
