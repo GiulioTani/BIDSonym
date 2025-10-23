@@ -541,7 +541,7 @@ def run_revert_mode(args, layout):
     print(f"{'=' * 60}")
 
 
-def run_deeid():
+def run_deid():
     """
     Main entry point for BIDSonym de-identification workflow.
     """
