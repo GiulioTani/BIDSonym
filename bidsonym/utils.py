@@ -1,13 +1,8 @@
 import os
-import sys
 import json
 
 from glob import glob
 from shutil import move
-
-import nipype.pipeline.engine as pe
-from nipype import Function
-from nipype.interfaces import utility as niu
 
 from bidsonym.reports import setup_logging
 
@@ -45,7 +40,7 @@ def run_brain_extraction_bet(image, frac, subject_label, bids_dir, session=None)
     import os
     from nipype.interfaces.fsl import BET
 
-    print(f"DEBUG: run_brain_extraction_bet called with:")
+    print("DEBUG: run_brain_extraction_bet called with:")
     print(f"  subject_label: {subject_label}")
     print(f"  session: {session}")
     print(f"  bids_dir: {bids_dir}")
@@ -109,7 +104,7 @@ def brain_extraction_nb(image, subject_label, bids_dir, session=None):
     import os
     from subprocess import check_call
     
-    print(f"DEBUG: brain_extraction_nb called with:")
+    print("DEBUG: brain_extraction_nb called with:")
     print(f"  subject_label: {subject_label}")
     print(f"  session: {session}")
     print(f"  bids_dir: {bids_dir}")
@@ -159,10 +154,9 @@ def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None, mod
     import os
     import json
     import pandas as pd
-    from glob import glob
     from bids import BIDSLayout
     
-    print(f"DEBUG: check_meta_data called with:")
+    print("DEBUG: check_meta_data called with:")
     print(f"  subject_label: {subject_label}")
     print(f"  session: {session}")
     print(f"  bids_dir: {bids_dir}")
@@ -269,7 +263,7 @@ def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None, mod
         return True
         
     else:
-        print(f'SUCCESS: No potentially identifying metadata fields found.')
+        print('SUCCESS: No potentially identifying metadata fields found.')
         return False
 
 
@@ -359,6 +353,74 @@ def del_meta_data(bids_dir, subject_label, fields_del):
             print('writing %s' % meta_file)
             # Use indent=4 for human-readable formatting
             json.dump(meta_data, json_output_file, indent=4)
+
+
+def copy_no_deid(bids_dir, subject_label, image_file, session=None):
+    """
+    Copy original non-deidentified image and JSON files to session-aware sourcedata directory.
+    
+    Parameters
+    ----------
+    bids_dir : str
+        Path to BIDS root directory.
+    subject_label : str
+        Label of subject (without 'sub-' prefix).
+    image_file : str
+        Path to the image file to be copied.
+    session : str, optional
+        Session label (without 'ses-' prefix).
+    
+    Returns
+    -------
+    str
+        Path to the copied non-deidentified image file.
+    """
+    
+    import os
+    from shutil import copy2
+    from os.path import join as opj
+    
+    print("DEBUG: copy_no_deid called with:")
+    print(f"  subject_label: {subject_label}")
+    print(f"  session: {session}")
+    print(f"  bids_dir: {bids_dir}")
+    print(f"  image_file: {image_file}")
+    
+    # Create paths for session-aware organized structure
+    if session is not None:
+        # For session-based datasets, create anat subdirectory within session
+        output_dir = opj(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', f'ses-{session}', 'anat')
+        print(f"DEBUG: Using session-aware output directory: {output_dir}")
+    else:
+        # For single-session datasets, create anat subdirectory within subject
+        output_dir = opj(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', 'anat')
+        print(f"DEBUG: Using subject-level output directory: {output_dir}")
+    
+    # Ensure the anat output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"DEBUG: Created/verified directory: {output_dir}")
+    
+    # Extract filename and create desc-nondeid version
+    original_basename = os.path.basename(image_file)
+    nondeid_basename = original_basename.replace('.nii.gz', '_desc-nondeid.nii.gz')
+    
+    # Copy the NIfTI image file
+    nondeid_image_path = opj(output_dir, nondeid_basename)
+    copy2(image_file, nondeid_image_path)
+    print(f"Copied original image to: {nondeid_image_path}")
+    
+    # Look for corresponding JSON file
+    json_file = image_file.replace('.nii.gz', '.json')
+    if os.path.exists(json_file):
+        # Copy JSON file with desc-nondeid naming
+        nondeid_json_basename = original_basename.replace('.nii.gz', '_desc-nondeid.json')
+        nondeid_json_path = opj(output_dir, nondeid_json_basename)
+        copy2(json_file, nondeid_json_path)
+        print(f"Copied original JSON to: {nondeid_json_path}")
+    else:
+        print(f"No JSON file found for: {image_file}")
+    
+    return nondeid_image_path
 
 
 def rename_non_deid(bids_dir, subject_label):
