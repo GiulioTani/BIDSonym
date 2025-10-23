@@ -4,8 +4,6 @@ import json
 from glob import glob
 from shutil import move
 
-from bidsonym.reports import setup_logging
-
 # Add any other missing imports if needed
 
 
@@ -95,56 +93,6 @@ def run_brain_extraction_bet(image, frac, subject_label, bids_dir, session=None)
         import traceback
         traceback.print_exc()
         return None
-
-
-def brain_extraction_nb(image, subject_label, bids_dir, session=None):
-    """
-    Extract brain mask using nobrainer and save to session-aware anat directory.
-    """
-    import os
-    from subprocess import check_call
-    
-    print("DEBUG: brain_extraction_nb called with:")
-    print(f"  subject_label: {subject_label}")
-    print(f"  session: {session}")
-    print(f"  bids_dir: {bids_dir}")
-    
-    # Create output directory in session-aware anat subdirectory
-    if session is not None:
-        output_dir = os.path.join(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', f'ses-{session}', 'anat')
-        print(f"DEBUG: Using session-aware output directory: {output_dir}")
-    else:
-        output_dir = os.path.join(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', 'anat')
-        print(f"DEBUG: Using subject-level output directory: {output_dir}")
-    
-    # Ensure the anat directory exists
-    os.makedirs(output_dir, exist_ok=True)
-    print(f"DEBUG: Created/verified directory: {output_dir}")
-    
-    # Create output filename for brain mask
-    input_basename = os.path.basename(image)
-    if '_desc-nondeid' in input_basename:
-        mask_basename = input_basename.replace('_desc-nondeid.nii.gz', '_brainmask_desc-nondeid.nii.gz')
-    else:
-        mask_basename = input_basename.replace('.nii.gz', '_brainmask_desc-nondeid.nii.gz')
-    
-    outfile = os.path.join(output_dir, mask_basename)
-    print(f"DEBUG: Target brain mask file: {outfile}")
-    
-    # Construct the nobrainer command for brain extraction
-    cmd = ['nobrainer',
-           'predict',
-           '--model=/opt/nobrainer/models/brain-extraction-unet-128iso-model.h5',
-           '--verbose',
-           image,
-           outfile,
-           ]
-    
-    # Execute the nobrainer brain extraction command
-    check_call(cmd)
-    
-    print(f"Created brain mask: {outfile}")
-    return outfile
 
 
 def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None, modalities=None):
@@ -535,15 +483,159 @@ def deface_image(image, warped_mask, outfile):
     masked_brain.to_filename(outfile)
 
 
+def validate_input_dir(exec_env, bids_dir, participant_label):
+    """
+    Validate BIDS directory and structure via the BIDS-validator.
+    Functionality copied from fmriprep.
+
+    Parameters
+    ----------
+    exec_env : str
+        Environment BIDSonym is run in.
+    bids_dir : str
+        Path to BIDS root directory.
+    participant_label: str
+        Label(s) of subject to be checked (without 'sub-').
+    """
+
+    import tempfile
+    import subprocess
+    import sys
+    import json
+    
+    # Configure the BIDS validator with a comprehensive list of warnings/errors to ignore
+    # This allows validation to focus on structural issues while ignoring common
+    # non-critical warnings that don't affect the defacing/anonymization process
+    validator_config_dict = {
+        "ignore": [
+            "EVENTS_COLUMN_ONSET",           # Missing onset column in events files
+            "EVENTS_COLUMN_DURATION",       # Missing duration column in events files
+            "TSV_EQUAL_ROWS",               # Unequal number of rows in TSV files
+            "TSV_EMPTY_CELL",               # Empty cells in TSV files
+            "TSV_IMPROPER_NA",              # Improper N/A values in TSV files
+            "VOLUME_COUNT_MISMATCH",        # Mismatch in volume counts between files
+            "BVAL_MULTIPLE_ROWS",           # Multiple rows in bval files
+            "BVEC_NUMBER_ROWS",             # Incorrect number of rows in bvec files
+            "DWI_MISSING_BVAL",             # Missing bval files for DWI data
+            "INCONSISTENT_SUBJECTS",        # Inconsistent subject information
+            "INCONSISTENT_PARAMETERS",      # Inconsistent acquisition parameters
+            "BVEC_ROW_LENGTH",              # Incorrect bvec row length
+            "B_FILE",                       # Issues with b-files
+            "PARTICIPANT_ID_COLUMN",        # Missing participant_id column
+            "PARTICIPANT_ID_MISMATCH",      # Mismatch in participant IDs
+            "TASK_NAME_MUST_DEFINE",        # Undefined task names
+            "PHENOTYPE_SUBJECTS_MISSING",   # Missing subjects in phenotype files
+            "STIMULUS_FILE_MISSING",        # Missing stimulus files
+            "DWI_MISSING_BVEC",             # Missing bvec files for DWI data
+            "EVENTS_TSV_MISSING",           # Missing events TSV files
+            "TSV_IMPROPER_NA",              # Duplicate entry (intentional)
+            "ACQTIME_FMT",                  # Acquisition time format issues
+            "Participants age 89 or higher",  # Age-related warnings (privacy)
+            "DATASET_DESCRIPTION_JSON_MISSING",  # Missing dataset description
+            "FILENAME_COLUMN",              # Issues with filename columns
+            "WRONG_NEW_LINE",               # Wrong newline characters
+            "MISSING_TSV_COLUMN_CHANNELS",  # Missing channels column in TSV
+            "MISSING_TSV_COLUMN_IEEG_CHANNELS",  # Missing iEEG channels column
+            "MISSING_TSV_COLUMN_IEEG_ELECTRODES",  # Missing iEEG electrodes column
+            "UNUSED_STIMULUS",              # Unused stimulus files
+            "CHANNELS_COLUMN_SFREQ",        # Missing sampling frequency column
+            "CHANNELS_COLUMN_LOWCUT",       # Missing low-cut filter column
+            "CHANNELS_COLUMN_HIGHCUT",      # Missing high-cut filter column
+            "CHANNELS_COLUMN_NOTCH",        # Missing notch filter column
+            "CUSTOM_COLUMN_WITHOUT_DESCRIPTION",  # Custom columns without description
+            "ACQTIME_FMT",                  # Duplicate entry (intentional)
+            "SUSPICIOUSLY_LONG_EVENT_DESIGN",  # Unusually long event designs
+            "SUSPICIOUSLY_SHORT_EVENT_DESIGN",  # Unusually short event designs
+            "MALFORMED_BVEC",               # Malformed bvec files
+            "MALFORMED_BVAL",               # Malformed bval files
+            "MISSING_TSV_COLUMN_EEG_ELECTRODES",  # Missing EEG electrodes column
+            "MISSING_SESSION"               # Missing session information
+        ],
+        "error": ["NO_T1W"],  # Still treat missing T1w images as errors (critical for defacing)
+        "ignoredFiles": ['/dataset_description.json', '/participants.tsv']  # Skip these files
+    }
+    
+    # Validate participant labels and limit validation to requested participants only
+    if participant_label:
+        # Get all subject directories in the BIDS dataset
+        all_subs = set([s.name[4:] for s in bids_dir.glob('sub-*')])
+        
+        # Parse requested participant labels, handling both 'sub-' prefixed and plain labels
+        selected_subs = set([s[4:] if s.startswith('sub-') else s
+                             for s in participant_label])
+        
+        # Check for invalid participant labels (requested but not found in dataset)
+        bad_labels = selected_subs.difference(all_subs)
+        if bad_labels:
+            # Create detailed error message with environment-specific troubleshooting
+            error_msg = 'Data for requested participant(s) label(s) not found. Could ' \
+                        'not find data for participant(s): %s. Please verify the requested ' \
+                        'participant labels.'
+            
+            # Add Docker-specific troubleshooting information
+            if exec_env == 'docker':
+                error_msg += ' This error can be caused by the input data not being ' \
+                             'accessible inside the docker container. Please make sure all ' \
+                             'volumes are mounted properly (see https://docs.docker.com/' \
+                             'engine/reference/commandline/run/#mount-volume--v---read-only)'
+            
+            # Add Singularity-specific troubleshooting information
+            if exec_env == 'singularity':
+                error_msg += ' This error can be caused by the input data not being ' \
+                             'accessible inside the singularity container. Please make sure ' \
+                             'all paths are mapped properly (see https://www.sylabs.io/' \
+                             'guides/3.0/user-guide/bind_paths_and_mounts.html)'
+            
+            # Raise error with the list of problematic participant labels
+            raise RuntimeError(error_msg % ','.join(bad_labels))
+
+        # For participants not selected, add them to ignored files list
+        # This optimizes validation by skipping unnecessary subjects
+        ignored_subs = all_subs.difference(selected_subs)
+        if ignored_subs:
+            for sub in ignored_subs:
+                # Use wildcard pattern to ignore entire subject directories
+                validator_config_dict["ignoredFiles"].append("/sub-%s/**" % sub)
+    
+    # Run BIDS validation using temporary configuration file
+    with tempfile.NamedTemporaryFile('w+') as temp:
+        # Write the validator configuration to a temporary JSON file
+        temp.write(json.dumps(validator_config_dict))
+        temp.flush()
+        
+        try:
+            # Execute BIDS validator with custom configuration
+            # -c flag specifies the path to the configuration file
+            subprocess.check_call(['bids-validator', bids_dir, '-c', temp.name])
+        except FileNotFoundError:
+            # Handle case where BIDS validator is not installed
+            # Print to stderr to distinguish from normal output
+            print("bids-validator does not appear to be installed", file=sys.stderr)
+
+
 def clean_up_files(bids_dir, subject_label, session=None):
     """
     Restructure BIDSonym outcomes following BIDS conventions with session-aware organization.
     This function moves files that might be in the wrong locations to the correct subdirectories.
+    
+    Parameters
+    ----------
+    bids_dir : str
+        Path to BIDS root directory.
+    subject_label : str
+        Label of subject (without 'sub-' prefix).
+    session : str, optional
+        Session label (without 'ses-' prefix).
     """
     
     import os
     from glob import glob
     from shutil import move
+    
+    print("DEBUG: clean_up_files called with:")
+    print(f"  subject_label: {subject_label}")
+    print(f"  session: {session}")
+    print(f"  bids_dir: {bids_dir}")
     
     # Create output paths based on whether session information is provided
     if session is not None:
@@ -554,17 +646,20 @@ def clean_up_files(bids_dir, subject_label, session=None):
         
         # Also check subject root for files that should be in session directories
         subject_root = os.path.join(bids_dir, f"sourcedata/bidsonym/sub-{subject_label}")
+        print(f"DEBUG: Using session-aware structure: {session_path}")
     else:
         subject_path = os.path.join(bids_dir, f"sourcedata/bidsonym/sub-{subject_label}")
         out_path_anat = os.path.join(subject_path, "anat")
         out_path_qc = os.path.join(subject_path, "QC")
         out_path_info = os.path.join(subject_path, "meta_data_info")
         subject_root = subject_path
+        print(f"DEBUG: Using subject-level structure: {subject_path}")
 
     # Create output directories if they don't exist
     os.makedirs(out_path_anat, exist_ok=True)
     os.makedirs(out_path_qc, exist_ok=True)
     os.makedirs(out_path_info, exist_ok=True)
+    print("DEBUG: Created/verified directories: anat, QC, meta_data_info")
 
     # Look for files that might be in the wrong locations
     search_paths = [subject_root]
@@ -636,26 +731,19 @@ def clean_up_files(bids_dir, subject_label, session=None):
 
 def revert_bidsonym(bids_dir, subject_label, session=None, confirm=True):
     """
-    Revert the BIDSonym process by copying back non-defaced images and
-    metadata from sourcedata and removing all BIDSonym-generated files.
-
-    This function performs a complete reversal of the BIDSonym anonymization
-    process by restoring original files from the sourcedata backup and removing
-    all defaced/de-identified files from the main BIDS structure.
-
+    Revert BIDSonym de-identification by restoring original files from sourcedata.
+    
     Parameters
     ----------
     bids_dir : str
         Path to BIDS root directory.
     subject_label : str
-        Label of subject to restore (without 'sub-' prefix).
+        Label of subject (without 'sub-' prefix).
     session : str, optional
-        Session label (if applicable, without 'ses-' prefix).
-        If provided, only that specific session will be reverted.
+        Session label (without 'ses-' prefix). If None, reverts all sessions.
     confirm : bool, optional
-        If True, ask for user confirmation before proceeding.
-        Default is True for safety to prevent accidental data loss.
-    
+        Whether to ask for confirmation before reverting (default: True).
+        
     Returns
     -------
     bool
@@ -663,351 +751,80 @@ def revert_bidsonym(bids_dir, subject_label, session=None, confirm=True):
     """
     
     import os
-    import shutil
-    from glob import glob
     from shutil import copy2
+    from glob import glob
     
-    # Set up logging system
-    log_print, log_path = setup_logging(bids_dir, subject_label, session, "bidsonymrevert")
+    print(f"Reverting BIDSonym for subject {subject_label}")
+    if session:
+        print(f"Session: {session}")
     
-    # Build session description for messages
-    session_desc = f" (session: {session})" if session is not None else ""
-    
-    # Display header with subject and session information
-    log_print("BIDSonym Revert")
-    log_print(f"Subject: sub-{subject_label}")
-    
-    # Build descriptive message including session if provided
+    # Define sourcedata paths
     if session is not None:
-        log_print(f"Session: ses-{session}")
-        log_print("Processing multi-session dataset structure")
+        sourcedata_path = os.path.join(bids_dir, 'sourcedata', 'bidsonym', 
+                                       f'sub-{subject_label}', f'ses-{session}')
+        bids_path = os.path.join(bids_dir, f'sub-{subject_label}', f'ses-{session}')
     else:
-        log_print("Processing single-session dataset structure")
+        sourcedata_path = os.path.join(bids_dir, 'sourcedata', 'bidsonym', 
+                                       f'sub-{subject_label}')
+        bids_path = os.path.join(bids_dir, f'sub-{subject_label}')
     
-    if log_path:
-        log_print(f"Log file created: {log_path}")
-    
-    # Define paths based on whether this is a session-specific or single-session dataset
-    if session is not None:
-        # Multi-session dataset: target specific session directory
-        subject_dir = os.path.join(bids_dir, f"sub-{subject_label}", f"ses-{session}")
-        sourcedata_subject_dir = os.path.join(bids_dir, "sourcedata", "bidsonym", f"sub-{subject_label}", f"ses-{session}")
-        # Base directory contains all sessions for this subject
-        sourcedata_base_dir = os.path.join(bids_dir, "sourcedata", "bidsonym", f"sub-{subject_label}")
-    else:
-        # Single-session dataset: target subject directory directly
-        subject_dir = os.path.join(bids_dir, f"sub-{subject_label}")
-        sourcedata_subject_dir = os.path.join(bids_dir, "sourcedata", "bidsonym", f"sub-{subject_label}")
-        # Base and subject directories are the same for single-session
-        sourcedata_base_dir = sourcedata_subject_dir
-    
-    # Display path information for transparency
-    log_print(f"BIDS directory: {bids_dir}")
-    log_print(f"Target subject directory: {subject_dir}")
-    log_print(f"BIDSonym sourcedata directory: {sourcedata_base_dir}")
-    log_print("-" * 60)
-    
-    # Check if sourcedata directory exists - this indicates BIDSonym was previously run
-    log_print(f"\n Checking for BIDSonym backup data{session_desc}...")
-    if not os.path.exists(sourcedata_base_dir):
-        log_print(f"ERROR: No BIDSonym sourcedata found for subject {subject_label}{session_desc}", "ERROR")
-        log_print(f"   Expected location: {sourcedata_base_dir}", "ERROR")
-        log_print("   This indicates BIDSonym was never run on this subject, or", "ERROR")
-        log_print("   the backup data has been manually removed.", "ERROR")
-        return False
-    else:
-        log_print(f"Found BIDSonym backup directory: {sourcedata_base_dir}")
-    
-    # Find all original files in sourcedata directory tree
-    # These files have 'desc-nondeid' identifier and represent the original, non-anonymized data
-    log_print(f"\nScanning for original (non-anonymized) files{session_desc}...")
-    
-    # Look for files with 'desc-nondeid' identifier in the main sourcedata directory
-    # Use recursive search to handle both organized and unorganized file structures
-    original_images = glob(os.path.join(sourcedata_base_dir, "**/*desc-nondeid.nii.gz"), recursive=True)
-    original_json_files = glob(os.path.join(sourcedata_base_dir, "**/*desc-nondeid.json"), recursive=True)
-    
-    # Also check organized subdirectories that may exist if clean_up_files was run
-    # These subdirectories separate anatomical files from metadata and QC for better organization
-    anat_subdir = os.path.join(sourcedata_base_dir, "anat")  # Changed from "images" to "anat"
-    qc_subdir = os.path.join(sourcedata_base_dir, "QC")
-    metadata_subdir = os.path.join(sourcedata_base_dir, "meta_data_info")
-    
-    # Check if organized anat subdirectory exists and scan it
-    if os.path.exists(anat_subdir):
-        log_print(f"   Checking organized anat subdirectory: {anat_subdir}")
-        additional_images = glob(os.path.join(anat_subdir, "*desc-nondeid.nii.gz"))
-        additional_brainmasks = glob(os.path.join(anat_subdir, "*brainmask*.nii.gz"))
-        additional_json = glob(os.path.join(anat_subdir, "*desc-nondeid.json"))
-        original_images.extend(additional_images)
-        original_images.extend(additional_brainmasks)  # Include brain masks with images
-        original_json_files.extend(additional_json)
-    
-    # Check if QC subdirectory exists (contains visualization files, not for restoration)
-    if os.path.exists(qc_subdir):
-        log_print(f"   Found QC visualization directory: {qc_subdir}")
-        qc_files = glob(os.path.join(qc_subdir, "*.png")) + glob(os.path.join(qc_subdir, "*.gif"))
-        log_print(f"   QC directory contains {len(qc_files)} visualization files (will be removed)")
-        
-    # Check if organized metadata subdirectory exists and scan it    
-    if os.path.exists(metadata_subdir):
-        log_print(f"   Checking organized metadata subdirectory: {metadata_subdir}")
-        additional_analysis_json = glob(os.path.join(metadata_subdir, "*.json"))
-        # Only add non-desc-nondeid JSON files (these are analysis/task-level files)
-        additional_analysis_json = [f for f in additional_analysis_json if 'desc-nondeid' not in f]
-        original_json_files.extend(additional_analysis_json)
-    
-    # Find current defaced/modified files in main BIDS structure that need to be replaced
-    # These are the anonymized files that will be removed and replaced with originals
-    log_print(f"\nScanning current BIDS structure for files to replace{session_desc}...")
-    if session is not None:
-        # For session-specific reversion, only scan the target session directory
-        log_print(f"   Scanning session-specific directory: {subject_dir}")
-        current_images = glob(os.path.join(subject_dir, "**/*.nii.gz"), recursive=True)
-        current_json_files = glob(os.path.join(subject_dir, "**/*.json"), recursive=True)
-    else:
-        # For single-session reversion, scan the entire subject directory
-        log_print(f"   Scanning subject directory: {subject_dir}")
-        current_images = glob(os.path.join(subject_dir, "**/*.nii.gz"), recursive=True)
-        current_json_files = glob(os.path.join(subject_dir, "**/*.json"), recursive=True)
-    
-    # Validate that we found backup files to restore
-    # If no original files are found, this suggests BIDSonym was never run or backup data is missing
-    if not original_images and not original_json_files:
-        log_print(f"  WARNING: No original files found in sourcedata for subject {subject_label}{session_desc}", "WARNING")
-        log_print("   This may indicate that:", "WARNING")
-        log_print("   - BIDSonym was not previously run on this subject/session", "WARNING")
-        log_print("   - The backup files were manually removed", "WARNING")
-        log_print("   - The BIDSonym process was incomplete or failed", "WARNING")
-        log_print("   - Files may be in a different location or naming convention", "WARNING")
+    # Check if sourcedata exists
+    if not os.path.exists(sourcedata_path):
+        print(f"No BIDSonym sourcedata found at: {sourcedata_path}")
         return False
     
-    # Display comprehensive summary of what will be restored
-    log_print("\n REVERSION SUMMARY:")
-    log_print("=" * 60)
+    # Find original files to restore
+    anat_sourcedata = os.path.join(sourcedata_path, 'anat')
+    if not os.path.exists(anat_sourcedata):
+        print(f"No anatomical sourcedata found at: {anat_sourcedata}")
+        return False
     
-    log_print(f" Original image files to restore: {len(original_images)}")
-    if original_images:
-        for img in original_images[:3]:  # Show first 3
-            log_print(f"    {os.path.basename(img)}")
-        if len(original_images) > 3:
-            log_print(f"   ... and {len(original_images) - 3} more image files")
+    # Find all desc-nondeid files
+    original_files = glob(os.path.join(anat_sourcedata, '*desc-nondeid.nii.gz'))
+    original_json_files = glob(os.path.join(anat_sourcedata, '*desc-nondeid.json'))
     
-    log_print(f"\n Original JSON metadata files to restore: {len(original_json_files)}")
-    if original_json_files:
-        for json_file in original_json_files[:3]:  # Show first 3
-            log_print(f"    {os.path.basename(json_file)}")
-        if len(original_json_files) > 3:
-            log_print(f"   ... and {len(original_json_files) - 3} more JSON files")
+    all_original_files = original_files + original_json_files
     
-    log_print("\n  Current files to be removed:")
-    log_print(f"   - {len(current_images)} defaced/modified image files")
-    log_print(f"   - {len(current_json_files)} de-identified JSON files")
+    if not all_original_files:
+        print(f"No original files found to restore in: {anat_sourcedata}")
+        return False
     
-    log_print("\n Directories to be cleaned up:")
-    log_print(f"   - {sourcedata_base_dir}")
+    print(f"Found {len(all_original_files)} original files to restore")
     
-    # Check if we'll remove the entire bidsonym directory structure
-    # This helps inform the user about the scope of cleanup
-    bidsonym_dir = os.path.join(bids_dir, "sourcedata", "bidsonym")
-    remaining_subjects = []
-    if os.path.exists(bidsonym_dir):
-        # Find other subjects that have BIDSonym data (excluding current subject)
-        remaining_subjects = [
-            d for d in os.listdir(bidsonym_dir)
-            if os.path.isdir(os.path.join(bidsonym_dir, d))
-            and d != f"sub-{subject_label}"
-        ]
-    # Inform user about directory cleanup scope
-    if not remaining_subjects:
-        log_print(f"   - {bidsonym_dir} (no other subjects remain)")
-        sourcedata_dir = os.path.join(bids_dir, "sourcedata")
-        # Check if sourcedata will be completely empty after cleanup
-        if os.path.exists(sourcedata_dir) and len(os.listdir(sourcedata_dir)) == 1:
-            log_print(f"   - {sourcedata_dir} (will be empty)")
-    else:
-        log_print(f"   Note: {len(remaining_subjects)} other subjects remain in BIDSonym sourcedata")
-    
-    # Confirmation prompt with clear warning
+    # Ask for confirmation if requested
     if confirm:
-        log_print("\n" + "=" * 60)
-        log_print("  IMPORTANT WARNING:")
-        log_print("   This will permanently replace all defaced/de-identified files")
-        log_print(f"   with the original non-anonymized versions for subject {subject_label}{session_desc}.")
-        log_print("   This action cannot be undone!")
-        if session is not None:
-            log_print(f"   Only session '{session}' will be reverted for this subject.")
-        else:
-            log_print("   All sessions/data for this subject will be reverted.")
-        log_print("=" * 60)
-        
-        # Note: We still need to use regular input() for user interaction
-        response = input("\nType 'yes' to proceed with BIDSonym reversion: ")
-        log_print(f"User response to confirmation prompt: '{response}'", "INFO")
-        
-        if response.lower() != 'yes':
-            log_print(" BIDSonym reversion cancelled by user.", "INFO")
+        response = input("This will overwrite defaced files with original data. Continue? (y/N): ")
+        if response.lower() not in ['y', 'yes']:
+            print("Reversion cancelled")
             return False
     
-    try:
-        # Step 1: Remove current defaced/modified files from main BIDS structure
-        log_print(f"\n  STEP 1: Removing defaced/de-identified files{session_desc}...")
-        log_print(f"   Cleaning up main BIDS directory: {subject_dir}")
-        
-        # Initialize counters to track removal progress
-        removed_images = 0
-        removed_json = 0
-        
-        # Remove all current image files (these are defaced/anonymized versions)
-        for img_file in current_images:
-            try:
-                os.remove(img_file)
-                removed_images += 1
-                log_print(f"      Removed image: {os.path.basename(img_file)}")
-            except OSError as e:
-                log_print(f"       WARNING: Could not remove {os.path.basename(img_file)}: {e}", "WARNING")
-        
-        # Remove all current JSON files (these contain de-identified metadata)
-        for json_file in current_json_files:
-            try:
-                os.remove(json_file)
-                removed_json += 1
-                log_print(f"      Removed JSON: {os.path.basename(json_file)}")
-            except OSError as e:
-                log_print(f"       WARNING: Could not remove {os.path.basename(json_file)}: {e}", "WARNING")
-                
-        log_print(f"   Summary: Removed {removed_images} images and {removed_json} JSON files")
-        
-        # Step 2: Restore original image files to their proper BIDS locations
-        log_print(f"\n STEP 2: Restoring original image files{session_desc}...")
-        log_print("   Copying from sourcedata back to main BIDS structure")
-        
-        # Initialize counter to track restoration progress
-        restored_images = 0
-        
-        # Process each original image file found in sourcedata
-        for original_img in original_images:
-            # Remove the BIDSonym identifier to get the original BIDS filename
-            original_basename = os.path.basename(original_img)
-            restored_basename = original_basename.replace('_desc-nondeid', '')
-            
-            # Determine where this file should go in the BIDS structure
-            # This logic handles files from both organized and unorganized sourcedata
-            if "anat/" in original_img:  # Changed from "images/" to "anat/"
-                # File is in organized structure - extract just the filename
-                relative_path = restored_basename
-            else:
-                # File is in root of subject sourcedata directory
-                relative_path = restored_basename
-            
-            # Determine target directory based on BIDS file naming conventions
-            # Parse the filename to understand the modality and construct proper path
-            if '_T1w.' in restored_basename:
-                modality_dir = 'anat'
-            elif '_T2w.' in restored_basename:
-                modality_dir = 'anat'
-            elif '_FLAIR.' in restored_basename:
-                modality_dir = 'anat'
-            elif '_func.' in restored_basename or '_task-' in restored_basename:
-                modality_dir = 'func'
-            elif '_dwi.' in restored_basename:
-                modality_dir = 'dwi'
-            else:
-                # Default to anat for anatomical images
-                modality_dir = 'anat'
-            
-            # Construct the full target path in the main BIDS structure
-            target_path = os.path.join(subject_dir, modality_dir, restored_basename)
-            
-            # Ensure the target directory exists
-            os.makedirs(os.path.dirname(target_path), exist_ok=True)
-            
-            try:
-                # Copy the original file back to its BIDS location
-                copy2(original_img, target_path)
-                restored_images += 1
-                log_print(f"      Restored: {restored_basename}")
-            except OSError as e:
-                log_print(f"       ERROR: Could not restore {restored_basename}: {e}", "ERROR")
-        
-        log_print(f"   Summary: Restored {restored_images} image files")
-        
-        # Step 3: Restore original JSON metadata files
-        log_print(f"\n STEP 3: Restoring original JSON metadata files{session_desc}...")
-        
-        # Initialize counter to track JSON restoration progress
-        restored_json = 0
-        
-        # Process each original JSON file found in sourcedata
-        for original_json in original_json_files:
-            # Remove the BIDSonym identifier to get the original BIDS filename
-            original_basename = os.path.basename(original_json)
-            restored_basename = original_basename.replace('_desc-nondeid', '')
-            
-            # Determine target directory based on associated image modality
-            if '_T1w.' in restored_basename or '_T2w.' in restored_basename or '_FLAIR.' in restored_basename:
-                modality_dir = 'anat'
-            elif '_func.' in restored_basename or '_task-' in restored_basename:
-                modality_dir = 'func'
-            elif '_dwi.' in restored_basename:
-                modality_dir = 'dwi'
-            else:
-                modality_dir = 'anat'  # Default
-            
-            # Construct the full target path
-            target_path = os.path.join(subject_dir, modality_dir, restored_basename)
-            
-            # Ensure the target directory exists
-            os.makedirs(os.path.dirname(target_path), exist_ok=True)
-            
-            try:
-                # Copy the original JSON file back to its BIDS location
-                copy2(original_json, target_path)
-                restored_json += 1
-                log_print(f"      Restored: {restored_basename}")
-            except OSError as e:
-                log_print(f"       ERROR: Could not restore {restored_basename}: {e}", "ERROR")
-        
-        log_print(f"   Summary: Restored {restored_json} JSON files")
-        
-        # Step 4: Clean up BIDSonym sourcedata directories
-        log_print(f"\n STEP 4: Cleaning up BIDSonym sourcedata{session_desc}...")
-        
+    # Restore each file
+    restored_count = 0
+    for original_file in all_original_files:
         try:
-            # Remove the subject-specific sourcedata directory
-            if os.path.exists(sourcedata_base_dir):
-                shutil.rmtree(sourcedata_base_dir)
-                log_print(f"   Removed: {sourcedata_base_dir}")
+            # Generate target filename (remove _desc-nondeid)
+            basename = os.path.basename(original_file)
+            if '_desc-nondeid.nii.gz' in basename:
+                target_basename = basename.replace('_desc-nondeid.nii.gz', '.nii.gz')
+            elif '_desc-nondeid.json' in basename:
+                target_basename = basename.replace('_desc-nondeid.json', '.json')
+            else:
+                continue
             
-            # Check if we should remove the entire bidsonym directory
-            bidsonym_dir = os.path.join(bids_dir, "sourcedata", "bidsonym")
-            if os.path.exists(bidsonym_dir) and not os.listdir(bidsonym_dir):
-                # Directory is empty, remove it
-                os.rmdir(bidsonym_dir)
-                log_print(f"   Removed empty directory: {bidsonym_dir}")
-                
-                # Check if sourcedata is now empty
-                sourcedata_dir = os.path.join(bids_dir, "sourcedata")
-                if os.path.exists(sourcedata_dir) and not os.listdir(sourcedata_dir):
-                    os.rmdir(sourcedata_dir)
-                    log_print(f"   Removed empty directory: {sourcedata_dir}")
-                    
-        except OSError as e:
-            log_print(f"   WARNING: Could not fully clean up sourcedata: {e}", "WARNING")
-        
-        # Final success message
-        log_print(f"\n SUCCESS: BIDSonym reversion completed for subject {subject_label}{session_desc}!")
-        log_print("=" * 60)
-        log_print(" All original files have been restored to the main BIDS structure.")
-        log_print(" All BIDSonym-generated files and directories have been removed.")
-        log_print("=" * 60)
-        
-        return True
-        
-    except Exception as e:
-        # Handle any unexpected errors during the reversion process
-        log_print(f"\n ERROR: BIDSonym reversion failed for subject {subject_label}{session_desc}", "ERROR")
-        log_print(f"   Error details: {str(e)}", "ERROR")
-        log_print("   The dataset may be in an inconsistent state.", "ERROR")
-        log_print("   Please check the files manually and consider restoring from backup.", "ERROR")
-        return False
+            # Determine target path
+            target_path = os.path.join(bids_path, 'anat', target_basename)
+            
+            # Ensure target directory exists
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            
+            # Copy original file back to BIDS location
+            copy2(original_file, target_path)
+            print(f"Restored: {target_basename}")
+            restored_count += 1
+            
+        except Exception as e:
+            print(f"Error restoring {original_file}: {e}")
+    
+    print(f"Successfully restored {restored_count} files")
+    return restored_count > 0
+
