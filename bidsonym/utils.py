@@ -38,89 +38,134 @@ def check_outpath(bids_dir, subject_label):
         os.makedirs(out_path)
 
 
-def copy_no_deid(bids_dir, subject_label, image_file, session=None):
+def run_brain_extraction_bet(image, frac, subject_label, bids_dir, session=None):
     """
-    Copy original non-deidentified image and JSON files to session-aware sourcedata directory.
-    
-    Parameters
-    ----------
-    bids_dir : str
-        Path to BIDS root directory.
-    subject_label : str
-        Label of subject (without 'sub-' prefix).
-    image_file : str
-        Path to the image file to be copied.
-    session : str, optional
-        Session label (without 'ses-' prefix).
+    Setup and FSLs brainextraction (BET) workflow.
     """
-    
     import os
-    import json
-    from shutil import copy2
-    from os.path import join as opj
-    
-    # Create paths for session-aware organized structure - files should go to session-aware anat directory
+    from nipype.interfaces.fsl import BET
+
+    print(f"DEBUG: run_brain_extraction_bet called with:")
+    print(f"  subject_label: {subject_label}")
+    print(f"  session: {session}")
+    print(f"  bids_dir: {bids_dir}")
+
+    # Create output directory in session-aware anat subdirectory
     if session is not None:
-        # For session-based datasets, create anat subdirectory within session
-        output_dir = opj(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', f'ses-{session}', 'anat')
+        output_dir = os.path.join(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', f'ses-{session}', 'anat')
+        print(f"DEBUG: Using session-aware output directory: {output_dir}")
     else:
-        # For single-session datasets, create anat subdirectory within subject
-        output_dir = opj(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', 'anat')
+        output_dir = os.path.join(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', 'anat')
+        print(f"DEBUG: Using subject-level output directory: {output_dir}")
     
-    # Ensure the anat output directory exists
+    # Ensure the anat directory exists
     os.makedirs(output_dir, exist_ok=True)
+    print(f"DEBUG: Created/verified directory: {output_dir}")
     
-    # Extract filename and create desc-nondeid version
-    original_basename = os.path.basename(image_file)
-    nondeid_basename = original_basename.replace('.nii.gz', '_desc-nondeid.nii.gz')
-    
-    # Copy the NIfTI image file
-    nondeid_image_path = opj(output_dir, nondeid_basename)
-    copy2(image_file, nondeid_image_path)
-    print(f"Copied original image to: {nondeid_image_path}")
-    
-    # Look for corresponding JSON file
-    json_file = image_file.replace('.nii.gz', '.json')
-    if os.path.exists(json_file):
-        # Copy JSON file with desc-nondeid naming
-        nondeid_json_basename = original_basename.replace('.nii.gz', '_desc-nondeid.json')
-        nondeid_json_path = opj(output_dir, nondeid_json_basename)
-        copy2(json_file, nondeid_json_path)
-        print(f"Copied original JSON to: {nondeid_json_path}")
+    # Create output filename for brain mask
+    input_basename = os.path.basename(image)
+    if '_desc-nondeid' in input_basename:
+        mask_basename = input_basename.replace('_desc-nondeid.nii.gz', '_brainmask_desc-nondeid.nii.gz')
     else:
-        print(f"No JSON file found for: {image_file}")
+        mask_basename = input_basename.replace('.nii.gz', '_brainmask_desc-nondeid.nii.gz')
     
-    return nondeid_image_path
+    outfile = os.path.join(output_dir, mask_basename)
+    print(f"DEBUG: Target brain mask file: {outfile}")
+
+    # Create and run BET directly without complex workflow
+    bet = BET()
+    bet.inputs.in_file = image
+    bet.inputs.frac = float(frac)
+    bet.inputs.mask = True  # Generate binary mask
+    bet.inputs.out_file = outfile.replace('.nii.gz', '')  # BET adds .nii.gz automatically
+    
+    try:
+        # Execute BET directly
+        result = bet.run()
+        
+        # Get the actual output file path from BET results
+        actual_mask_file = result.outputs.mask_file
+        print(f"DEBUG: BET created mask at: {actual_mask_file}")
+        
+        # Rename to our desired naming convention if different
+        if actual_mask_file != outfile and os.path.exists(actual_mask_file):
+            os.rename(actual_mask_file, outfile)
+            print(f"DEBUG: Renamed {actual_mask_file} to {outfile}")
+        
+        print(f"Created brain mask: {outfile}")
+        return outfile
+        
+    except Exception as e:
+        print(f"Error running BET brain extraction: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def brain_extraction_nb(image, subject_label, bids_dir, session=None):
+    """
+    Extract brain mask using nobrainer and save to session-aware anat directory.
+    """
+    import os
+    from subprocess import check_call
+    
+    print(f"DEBUG: brain_extraction_nb called with:")
+    print(f"  subject_label: {subject_label}")
+    print(f"  session: {session}")
+    print(f"  bids_dir: {bids_dir}")
+    
+    # Create output directory in session-aware anat subdirectory
+    if session is not None:
+        output_dir = os.path.join(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', f'ses-{session}', 'anat')
+        print(f"DEBUG: Using session-aware output directory: {output_dir}")
+    else:
+        output_dir = os.path.join(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', 'anat')
+        print(f"DEBUG: Using subject-level output directory: {output_dir}")
+    
+    # Ensure the anat directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"DEBUG: Created/verified directory: {output_dir}")
+    
+    # Create output filename for brain mask
+    input_basename = os.path.basename(image)
+    if '_desc-nondeid' in input_basename:
+        mask_basename = input_basename.replace('_desc-nondeid.nii.gz', '_brainmask_desc-nondeid.nii.gz')
+    else:
+        mask_basename = input_basename.replace('.nii.gz', '_brainmask_desc-nondeid.nii.gz')
+    
+    outfile = os.path.join(output_dir, mask_basename)
+    print(f"DEBUG: Target brain mask file: {outfile}")
+    
+    # Construct the nobrainer command for brain extraction
+    cmd = ['nobrainer',
+           'predict',
+           '--model=/opt/nobrainer/models/brain-extraction-unet-128iso-model.h5',
+           '--verbose',
+           image,
+           outfile,
+           ]
+    
+    # Execute the nobrainer brain extraction command
+    check_call(cmd)
+    
+    print(f"Created brain mask: {outfile}")
+    return outfile
 
 
 def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None, modalities=None):
     """
     Check for potentially identifying metadata in JSON files.
-    
-    Parameters
-    ----------
-    bids_dir : str
-        Path to BIDS root directory.
-    subject_label : str
-        Label of subject (without 'sub-' prefix).
-    prob_fields : list, optional
-        List of fields to check for identifying information.
-    session : str, optional
-        Session label (without 'ses-' prefix).
-    modalities : list, optional
-        List of modalities to check.
-    
-    Returns
-    -------
-    bool
-        True if potentially identifying metadata found, False otherwise.
     """
-    
     import os
     import json
     import pandas as pd
     from glob import glob
     from bids import BIDSLayout
+    
+    print(f"DEBUG: check_meta_data called with:")
+    print(f"  subject_label: {subject_label}")
+    print(f"  session: {session}")
+    print(f"  bids_dir: {bids_dir}")
     
     # Default problematic fields if none provided
     if prob_fields is None:
@@ -207,10 +252,12 @@ def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None, mod
             # Only save to session-specific directory when session exists
             output_dir = os.path.join(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', f'ses-{session}', 'meta_data_info')
             csv_filename = f'sub-{subject_label}_ses-{session}_metadata-check.csv'
+            print(f"DEBUG: Using session-aware metadata directory: {output_dir}")
         else:
             # Only save to subject-level directory when no session
             output_dir = os.path.join(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', 'meta_data_info')
             csv_filename = f'sub-{subject_label}_metadata-check.csv'
+            print(f"DEBUG: Using subject-level metadata directory: {output_dir}")
         
         # Ensure the meta_data_info directory exists
         os.makedirs(output_dir, exist_ok=True)
@@ -219,15 +266,10 @@ def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None, mod
         df.to_csv(csv_path, index=False)
         print(f'\nResults saved to: {csv_path}')
         
-        print(f'\nWARNING: Found potentially identifying information!')
-        print(f'   Please review the results and consider removing or anonymizing')
-        print(f'   the identified fields before sharing this data.')
-        
         return True
         
     else:
         print(f'SUCCESS: No potentially identifying metadata fields found.')
-        print(f'   The checked files appear to be properly de-identified.')
         return False
 
 
@@ -375,293 +417,6 @@ def rename_non_deid(bids_dir, subject_label):
             print(f"Renamed: {filename} -> {new_filename}")
         except OSError as e:
             print(f"Error renaming {filename}: {e}")
-
-
-def brain_extraction_nb(image, subject_label, bids_dir):
-    """
-    Setup nobrainer brainextraction command.
-
-    Parameters
-    ----------
-    image : str
-        Path to image that should be defaced.
-    outfile : str
-        Name of the defaced file.
-    bids_dir : str
-        Path to BIDS root directory.
-    """
-
-    import os
-    from subprocess import check_call
-
-    # Construct the output path for the brain mask
-    # The mask will be saved in the subject's backup directory with descriptive naming
-    # Extract the base filename and add brain mask identifier and non-deid descriptor
-    outfile = os.path.join(bids_dir, "sourcedata/bidsonym/sub-%s" % subject_label,
-                           image[image.rfind('/') + 1:image.rfind('.nii')] + '_brainmask_desc-nondeid.nii.gz')
-
-    # Construct the nobrainer command for brain extraction
-    # nobrainer is a deep learning-based neuroimaging tool for brain extraction
-    cmd = ['nobrainer',                    # Base command
-           'predict',                      # Use prediction mode
-           '--model=/opt/nobrainer/models/brain-extraction-unet-128iso-model.h5',  # Pre-trained U-Net model for brain extraction
-           '--verbose',                    # Enable verbose output for debugging/monitoring
-           image,                          # Input image file path
-           outfile,                        # Output brain mask file path
-           ]
-    
-    # Execute the nobrainer brain extraction command
-    # check_call will raise an exception if the command fails (non-zero exit code)
-    # This ensures the function fails fast if brain extraction doesn't work
-    check_call(cmd)
-
-
-def run_brain_extraction_nb(image, subject_label, bids_dir):
-    """
-    Setup and run nobrainer brainextraction workflow.
-
-    Parameters
-    ----------
-    image : str
-        Path to image that should be defaced.
-    outfile : str
-        Name of the defaced file.
-    bids_dir : str
-        Path to BIDS root directory.
-    """
-
-    # Create a Nipype workflow for brain extraction
-    brainextraction_wf = pe.Workflow('brainextraction_wf')
-    
-    # Create an input node to handle input data
-    # IdentityInterface passes data through without modification
-    inputnode = pe.Node(niu.IdentityInterface(['in_file']),
-                        name='inputnode')
-    
-    # Create a processing node that wraps the brain_extraction_nb function
-    brainextraction = pe.Node(Function(input_names=['image', 'subject_label', 'bids_dir'],
-                                       output_names=['outfile'],
-                                       function=brain_extraction_nb),
-                              name='brainextraction')
-    
-    # Connect the input node to the brain extraction node
-    brainextraction_wf.connect([(inputnode, brainextraction, [('in_file', 'image')])])
-    
-    # Set the input data - the path to the image file to be processed
-    inputnode.inputs.in_file = image
-    
-    # Set the subject label for the brain extraction node
-    # This is used to construct proper output paths and filenames
-    brainextraction.inputs.subject_label = subject_label
-    
-    # Set the BIDS directory path for the brain extraction node
-    # This defines where output files should be stored
-    brainextraction.inputs.bids_dir = bids_dir
-    
-    # Execute the workflow
-    # This runs the entire pipeline: input -> brain extraction -> output
-    brainextraction_wf.run()
-
-
-def run_brain_extraction_bet(image, frac, subject_label, bids_dir, session=None):
-    """
-    Setup and FSLs brainextraction (BET) workflow.
-
-    Parameters
-    ----------
-    image : str
-        Path to image that should be defaced.
-    frac : float
-        Fractional intensity threshold (0 - 1).
-    subject_label : str
-        Label of subject (without 'sub-' prefix).
-    bids_dir : str
-        Path to BIDS root directory.
-    session : str, optional
-        Session label (without 'ses-' prefix).
-        
-    Returns
-    -------
-    str
-        Path to the created brain mask file.
-    """
-
-    import os
-    from nipype.interfaces.fsl import BET
-
-    # Create output directory in session-aware anat subdirectory
-    if session is not None:
-        output_dir = os.path.join(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', f'ses-{session}', 'anat')
-    else:
-        output_dir = os.path.join(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', 'anat')
-    
-    # Ensure the anat directory exists
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Create output filename for brain mask
-    input_basename = os.path.basename(image)
-    if '_desc-nondeid' in input_basename:
-        mask_basename = input_basename.replace('_desc-nondeid.nii.gz', '_brainmask_desc-nondeid.nii.gz')
-    else:
-        mask_basename = input_basename.replace('.nii.gz', '_brainmask_desc-nondeid.nii.gz')
-    
-    outfile = os.path.join(output_dir, mask_basename)
-
-    # Create and run BET directly without complex workflow
-    bet = BET()
-    bet.inputs.in_file = image
-    bet.inputs.frac = float(frac)
-    bet.inputs.mask = True  # Generate binary mask
-    bet.inputs.out_file = outfile.replace('.nii.gz', '')  # BET adds .nii.gz automatically
-    
-    try:
-        # Execute BET directly
-        result = bet.run()
-        
-        # Get the actual output file path from BET results
-        actual_mask_file = result.outputs.mask_file
-        
-        # Rename to our desired naming convention if different
-        if actual_mask_file != outfile:
-            if os.path.exists(actual_mask_file):
-                os.rename(actual_mask_file, outfile)
-        
-        print(f"Created brain mask: {outfile}")
-        return outfile
-        
-    except Exception as e:
-        print(f"Error running BET brain extraction: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-        
-
-def validate_input_dir(exec_env, bids_dir, participant_label):
-    """
-    Validate BIDS directory and structure via the BIDS-validator.
-    Functionality copied from fmriprep.
-
-    Parameters
-    ----------
-    exec_env : str
-        Environment BIDSonym is run in.
-    bids_dir : str
-        Path to BIDS root directory.
-    participant_label: str
-        Label(s) of subject to be checked (without 'sub-').
-    """
-
-    import tempfile
-    import subprocess
-    
-    # Configure the BIDS validator with a comprehensive list of warnings/errors to ignore
-    # This allows validation to focus on structural issues while ignoring common
-    # non-critical warnings that don't affect the defacing/anonymization process
-    validator_config_dict = {
-        "ignore": [
-            "EVENTS_COLUMN_ONSET",           # Missing onset column in events files
-            "EVENTS_COLUMN_DURATION",       # Missing duration column in events files
-            "TSV_EQUAL_ROWS",               # Unequal number of rows in TSV files
-            "TSV_EMPTY_CELL",               # Empty cells in TSV files
-            "TSV_IMPROPER_NA",              # Improper N/A values in TSV files
-            "VOLUME_COUNT_MISMATCH",        # Mismatch in volume counts between files
-            "BVAL_MULTIPLE_ROWS",           # Multiple rows in bval files
-            "BVEC_NUMBER_ROWS",             # Incorrect number of rows in bvec files
-            "DWI_MISSING_BVAL",             # Missing bval files for DWI data
-            "INCONSISTENT_SUBJECTS",        # Inconsistent subject information
-            "INCONSISTENT_PARAMETERS",      # Inconsistent acquisition parameters
-            "BVEC_ROW_LENGTH",              # Incorrect bvec row length
-            "B_FILE",                       # Issues with b-files
-            "PARTICIPANT_ID_COLUMN",        # Missing participant_id column
-            "PARTICIPANT_ID_MISMATCH",      # Mismatch in participant IDs
-            "TASK_NAME_MUST_DEFINE",        # Undefined task names
-            "PHENOTYPE_SUBJECTS_MISSING",   # Missing subjects in phenotype files
-            "STIMULUS_FILE_MISSING",        # Missing stimulus files
-            "DWI_MISSING_BVEC",             # Missing bvec files for DWI data
-            "EVENTS_TSV_MISSING",           # Missing events TSV files
-            "TSV_IMPROPER_NA",              # Duplicate entry (intentional)
-            "ACQTIME_FMT",                  # Acquisition time format issues
-            "Participants age 89 or higher",  # Age-related warnings (privacy)
-            "DATASET_DESCRIPTION_JSON_MISSING",  # Missing dataset description
-            "FILENAME_COLUMN",              # Issues with filename columns
-            "WRONG_NEW_LINE",               # Wrong newline characters
-            "MISSING_TSV_COLUMN_CHANNELS",  # Missing channels column in TSV
-            "MISSING_TSV_COLUMN_IEEG_CHANNELS",  # Missing iEEG channels column
-            "MISSING_TSV_COLUMN_IEEG_ELECTRODES",  # Missing iEEG electrodes column
-            "UNUSED_STIMULUS",              # Unused stimulus files
-            "CHANNELS_COLUMN_SFREQ",        # Missing sampling frequency column
-            "CHANNELS_COLUMN_LOWCUT",       # Missing low-cut filter column
-            "CHANNELS_COLUMN_HIGHCUT",      # Missing high-cut filter column
-            "CHANNELS_COLUMN_NOTCH",        # Missing notch filter column
-            "CUSTOM_COLUMN_WITHOUT_DESCRIPTION",  # Custom columns without description
-            "ACQTIME_FMT",                  # Duplicate entry (intentional)
-            "SUSPICIOUSLY_LONG_EVENT_DESIGN",  # Unusually long event designs
-            "SUSPICIOUSLY_SHORT_EVENT_DESIGN",  # Unusually short event designs
-            "MALFORMED_BVEC",               # Malformed bvec files
-            "MALFORMED_BVAL",               # Malformed bval files
-            "MISSING_TSV_COLUMN_EEG_ELECTRODES",  # Missing EEG electrodes column
-            "MISSING_SESSION"               # Missing session information
-        ],
-        "error": ["NO_T1W"],  # Still treat missing T1w images as errors (critical for defacing)
-        "ignoredFiles": ['/dataset_description.json', '/participants.tsv']  # Skip these files
-    }
-    
-    # Validate participant labels and limit validation to requested participants only
-    if participant_label:
-        # Get all subject directories in the BIDS dataset
-        all_subs = set([s.name[4:] for s in bids_dir.glob('sub-*')])
-        
-        # Parse requested participant labels, handling both 'sub-' prefixed and plain labels
-        selected_subs = set([s[4:] if s.startswith('sub-') else s
-                             for s in participant_label])
-        
-        # Check for invalid participant labels (requested but not found in dataset)
-        bad_labels = selected_subs.difference(all_subs)
-        if bad_labels:
-            # Create detailed error message with environment-specific troubleshooting
-            error_msg = 'Data for requested participant(s) label(s) not found. Could ' \
-                        'not find data for participant(s): %s. Please verify the requested ' \
-                        'participant labels.'
-            
-            # Add Docker-specific troubleshooting information
-            if exec_env == 'docker':
-                error_msg += ' This error can be caused by the input data not being ' \
-                             'accessible inside the docker container. Please make sure all ' \
-                             'volumes are mounted properly (see https://docs.docker.com/' \
-                             'engine/reference/commandline/run/#mount-volume--v---read-only)'
-            
-            # Add Singularity-specific troubleshooting information
-            if exec_env == 'singularity':
-                error_msg += ' This error can be caused by the input data not being ' \
-                             'accessible inside the singularity container. Please make sure ' \
-                             'all paths are mapped properly (see https://www.sylabs.io/' \
-                             'guides/3.0/user-guide/bind_paths_and_mounts.html)'
-            
-            # Raise error with the list of problematic participant labels
-            raise RuntimeError(error_msg % ','.join(bad_labels))
-
-        # For participants not selected, add them to ignored files list
-        # This optimizes validation by skipping unnecessary subjects
-        ignored_subs = all_subs.difference(selected_subs)
-        if ignored_subs:
-            for sub in ignored_subs:
-                # Use wildcard pattern to ignore entire subject directories
-                validator_config_dict["ignoredFiles"].append("/sub-%s/**" % sub)
-    
-    # Run BIDS validation using temporary configuration file
-    with tempfile.NamedTemporaryFile('w+') as temp:
-        # Write the validator configuration to a temporary JSON file
-        temp.write(json.dumps(validator_config_dict))
-        temp.flush()
-        
-        try:
-            # Execute BIDS validator with custom configuration
-            # -c flag specifies the path to the configuration file
-            subprocess.check_call(['bids-validator', bids_dir, '-c', temp.name])
-        except FileNotFoundError:
-            # Handle case where BIDS validator is not installed
-            # Print to stderr to distinguish from normal output
-            print("bids-validator does not appear to be installed", file=sys.stderr)
 
 
 def deface_image(image, warped_mask, outfile):

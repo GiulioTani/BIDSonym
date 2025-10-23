@@ -107,7 +107,7 @@ def get_parser():
     parser.add_argument(
         '--bet_frac',
         help='In case BET is used for pre-defacing brain extraction, '
-             'provide a Frac value.',
+            
         nargs=1
     )
     parser.add_argument(
@@ -139,10 +139,9 @@ def get_parser():
     return parser
 
 
-def process_subject_session(args, layout, subject_label, session=None,
-                            log_print=print):
+def process_subject_session(args, layout, subject_label, session_label=None):
     """
-    Process a single subject/session combination.
+    Process a single subject and session combination.
     
     Parameters
     ----------
@@ -154,20 +153,18 @@ def process_subject_session(args, layout, subject_label, session=None,
         Subject label to process.
     session : str, optional
         Session label to process.
-    log_print : function, optional
-        Logging function to use for output.
     """
     
     log_print(
         f"Processing subject {subject_label}"
-        + (f", session {session}" if session else "")
+        + (f", session {session_label}" if session_label else "")
     )
     
     # Get T1w images for this subject/session
-    if session:
+    if session_label:
         list_t1w = layout.get(subject=subject_label, extension='nii.gz',
                               suffix='T1w', return_type='filename',
-                              session=session)
+                              session=session_label)
     else:
         list_t1w = layout.get(subject=subject_label, extension='nii.gz',
                               suffix='T1w', return_type='filename')
@@ -175,7 +172,7 @@ def process_subject_session(args, layout, subject_label, session=None,
     if not list_t1w:
         log_print(
             f"No T1w images found for subject {subject_label}"
-            + (f", session {session}" if session else "")
+            + (f", session {session_label}" if session_label else "")
         )
         return
     
@@ -194,17 +191,17 @@ def process_subject_session(args, layout, subject_label, session=None,
                     "extraction, please provide a Frac value. For example: "
                     "--bet_frac 0.5"
                 )
-            run_brain_extraction_bet(T1_file, args.bet_frac[0], subject_label,
-                                     args.bids_dir)
+            mask_file = run_brain_extraction_bet(T1_file, args.bet_frac[0], subject_label, 
+                                           args.bids_dir, session=session_label)
         elif args.brainextraction == 'nobrainer':
-            run_brain_extraction_nb(T1_file, subject_label, args.bids_dir)
+            mask_file = brain_extraction_nb(T1_file, subject_label, args.bids_dir, 
+                                      session=session_label)
         
         # Check metadata for potentially identifying information
-        check_meta_data(args.bids_dir, subject_label, args.check_meta)
+        check_meta_data(args.bids_dir, subject_label, session=session_label)
         
-        # Copy original files to sourcedata before defacing
-        source_t1w = copy_no_deid(args.bids_dir, subject_label, T1_file,
-                                  session=session)
+        # Copy original files with session awareness
+        copy_no_deid(args.bids_dir, subject_label, T1_file, session=session_label)
         
         # Delete specified metadata fields if requested
         if args.del_meta:
@@ -225,12 +222,12 @@ def process_subject_session(args, layout, subject_label, session=None,
     # Process T2w images if requested
     if args.deface_t2w:
         process_additional_modality(args, layout, subject_label, 'T2w',
-                                    session, log_print)
+                                    session_label, log_print)
     
     # Process FLAIR images if requested
     if args.deface_flair:
         process_additional_modality(args, layout, subject_label, 'FLAIR',
-                                    session, log_print)
+                                    session_label, log_print)
 
 
 def process_additional_modality(args, layout, subject_label, modality,

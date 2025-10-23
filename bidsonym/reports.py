@@ -2,10 +2,6 @@
 import os
 from datetime import datetime
 
-import nipype.pipeline.engine as pe
-from nipype import Function
-from nipype.interfaces import utility as niu
-
 
 def setup_logging(bids_dir, subject_label, session=None, 
                   operation="bidsonymrevert"):
@@ -476,22 +472,6 @@ def plot_defaced_comparison(image, mask, outfile, bids_dir=None):
     """
     Plot before/after comparison of defacing results.
     Shows original image on left and defaced image on right with single sagittal cut.
-    
-    Parameters
-    ----------
-    image : str
-        Path to original (non-defaced) image.
-    mask : str
-        Path to defaced image.
-    outfile : str
-        Path for output comparison plot.
-    bids_dir : str, optional
-        BIDS directory path (for compatibility).
-        
-    Returns
-    -------
-    str
-        Path to the created output file.
     """
     
     # Import all required modules within the function for Nipype compatibility
@@ -527,8 +507,17 @@ def plot_defaced_comparison(image, mask, outfile, bids_dir=None):
         img_nib = nib.load(image)
         img_shape = img_nib.shape
         
-        # Calculate middle sagittal slice (x-coordinate)
-        middle_x = img_shape[0] // 2
+        # Calculate middle sagittal slice (x-coordinate) - convert to world coordinates
+        middle_x_voxel = img_shape[0] // 2
+        affine = img_nib.affine
+        
+        # Convert voxel coordinate to world coordinate
+        voxel_coords = [middle_x_voxel, img_shape[1] // 2, img_shape[2] // 2, 1]
+        world_coords = affine.dot(voxel_coords)
+        middle_x_world = world_coords[0]
+        
+        print(f"DEBUG: Image shape: {img_shape}")
+        print(f"DEBUG: Middle voxel: {middle_x_voxel}, World coord: {middle_x_world}")
         
         # Create figure with two subplots side by side
         fig = figure(figsize=(12, 6))
@@ -538,7 +527,7 @@ def plot_defaced_comparison(image, mask, outfile, bids_dir=None):
         plot_anat(
             image, 
             display_mode='x', 
-            cut_coords=[middle_x],
+            cut_coords=[middle_x_world],
             axes=ax1, 
             title='Original', 
             annotate=False,
@@ -550,7 +539,7 @@ def plot_defaced_comparison(image, mask, outfile, bids_dir=None):
         plot_anat(
             mask, 
             display_mode='x', 
-            cut_coords=[middle_x],
+            cut_coords=[middle_x_world],
             axes=ax2, 
             title='Defaced', 
             annotate=False,
