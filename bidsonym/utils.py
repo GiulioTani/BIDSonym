@@ -97,11 +97,31 @@ def run_brain_extraction_bet(image, frac, subject_label, bids_dir, session=None)
 
 def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None, modalities=None):
     """
-    Check for potentially identifying metadata in JSON files.
+    Check for potentially identifying metadata in JSON files and NIfTI headers for each defaced image individually.
+    
+    Parameters
+    ----------
+    bids_dir : str
+        Path to BIDS root directory.
+    subject_label : str
+        Label of subject (without 'sub-' prefix).
+    prob_fields : list, optional
+        List of fields to check for identifying information.
+    session : str, optional
+        Session label (without 'ses-' prefix).
+    modalities : list, optional
+        List of modalities to check.
+    
+    Returns
+    -------
+    bool
+        True if potentially identifying metadata found, False otherwise.
     """
+    
     import os
     import json
     import pandas as pd
+    import nibabel as nib
     from bids import BIDSLayout
     
     print("DEBUG: check_meta_data called with:")
@@ -132,86 +152,247 @@ def check_meta_data(bids_dir, subject_label, prob_fields=None, session=None, mod
     # Initialize BIDS layout
     layout = BIDSLayout(bids_dir)
     
-    # Find JSON files for this subject/session
+    # Find NIfTI files for this subject/session (these are the defaced images)
     if session is not None:
-        json_files = layout.get(
+        nifti_files = layout.get(
             subject=subject_label,
             session=session,
-            extension='json',
+            extension='nii.gz',
             return_type='filename'
         )
     else:
-        json_files = layout.get(
+        nifti_files = layout.get(
             subject=subject_label,
-            extension='json',
+            extension='nii.gz',
             return_type='filename'
         )
     
     # Filter by modalities if specified
     if modalities:
         filtered_files = []
-        for json_file in json_files:
+        for nifti_file in nifti_files:
             for modality in modalities:
-                if modality in json_file:
-                    filtered_files.append(json_file)
+                if modality in nifti_file:
+                    filtered_files.append(nifti_file)
                     break
-        json_files = filtered_files
+        nifti_files = filtered_files
     
-    print(f"Found {len(json_files)} JSON files to check")
+    print(f"Found {len(nifti_files)} NIfTI files to check")
     
-    # Check each JSON file for problematic fields
-    metadata_results = []
+    # Create output directory for metadata info files
+    if session is not None:
+        output_dir = os.path.join(bids_dir, 'sourcedata', 'bidsonym', 
+                                  f'sub-{subject_label}', f'ses-{session}', 'meta_data_info')
+        print(f"DEBUG: Using session-aware metadata directory: {output_dir}")
+    else:
+        output_dir = os.path.join(bids_dir, 'sourcedata', 'bidsonym', 
+                                  f'sub-{subject_label}', 'meta_data_info')
+        print(f"DEBUG: Using subject-level metadata directory: {output_dir}")
     
-    for json_file in json_files:
-        print(f"Checking: {os.path.basename(json_file)}")
+    os.makedirs(output_dir, exist_ok=True)
+    
+    overall_found_issues = False
+    
+    # Process each NIfTI file individually
+    for nifti_file in nifti_files:
+        print(f"\nChecking: {os.path.basename(nifti_file)}")
+        
+        # Parse filename to extract components for output naming
+        basename = os.path.basename(nifti_file)
+        
+        # Extract components from filename
+        # Expected format: sub-XX_[ses-YY_][run-ZZ_]modality.nii.gz
+        filename_parts = {}
+        filename_parts['subject'] = subject_label
+        
+        # Extract session if present
+        if session is not None:
+            filename_parts['session'] = session
+        elif 'ses-' in basename:
+            # Extract session from filename if not provided as parameter
+            session_part = basename.split('ses-')[1].split('_')[0]
+            filename_parts['session'] = session_part
+        
+        # Extract run if present
+        if '_run-' in basename:
+            run_part = basename.split('_run-')[1].split('_')[0]
+            filename_parts['run'] = run_part
+        
+        # Extract modality (T1w, T2w, FLAIR, etc.)
+        modality = None
+        for mod in ['T1w', 'T2w', 'FLAIR', 'PD', 'PDT2', 'inplaneT1', 'inplaneT2', 
+                    'angio', 'defacemask', 'SWI', 'bold', 'sbref', 'dwi']:
+            if f'_{mod}.' in basename or basename.endswith(f'_{mod}.nii.gz'):
+                modality = mod
+                break
+        
+        if modality is None:
+            print(f"  Warning: Could not determine modality for {basename}, skipping")
+            continue
+            
+        filename_parts['modality'] = modality
+        
+        # Check JSON metadata if it exists
+        json_file = nifti_file.replace('.nii.gz', '.json')
+        json_metadata_results = []
+        
+        if os.path.exists(json_file):
+            print(f"  Checking JSON: {os.path.basename(json_file)}")
+            try:
+                with open(json_file, 'r') as f:
+                    metadata = json.load(f)
+                
+                # Check each field in the JSON file
+                for field, value in metadata.items():
+                    if field in prob_fields:
+                        # Found a potentially identifying field
+                        json_metadata_results.append({
+                            'file': os.path.basename(json_file),
+                            'field': field,
+                            'value': str(value),
+                            'severity': 'HIGH' if field in ['PatientName', 'PatientID', 'PatientBirthDate'] else 'MEDIUM'
+                        })
+                        print(f"    WARNING: Found {field}: {value}")
+            
+            except Exception as e:
+                print(f"    ERROR: Could not read {json_file}: {e}")
+        else:
+            print("  No corresponding JSON file found")
+        
+        # Check NIfTI header information
+        print(f"  Checking NIfTI header: {basename}")
+        header_info_results = []
         
         try:
-            with open(json_file, 'r') as f:
-                metadata = json.load(f)
+            # Load the NIfTI image
+            nifti_img = nib.load(nifti_file)
+            header = nifti_img.header
             
-            # Check each field in the JSON file
-            for field, value in metadata.items():
-                if field in prob_fields:
-                    # Found a potentially identifying field
-                    metadata_results.append({
-                        'file': os.path.basename(json_file),
-                        'field': field,
-                        'value': str(value),
-                        'severity': 'HIGH' if field in ['PatientName', 'PatientID', 'PatientBirthDate'] else 'MEDIUM'
-                    })
-                    print(f"  WARNING: Found {field}: {value}")
-        
+            # Extract header information
+            header_data = {}
+            
+            # Basic header fields that might contain identifying information
+            header_fields_to_check = [
+                'descrip',      # Description field
+                'aux_file',     # Auxiliary file name
+                'intent_name',  # Intent name
+                'db_name',      # Database name
+            ]
+            
+            # Get all header information
+            for field in header_fields_to_check:
+                try:
+                    if hasattr(header, field):
+                        value = getattr(header, field)
+                        if isinstance(value, bytes):
+                            value = value.decode('utf-8', errors='ignore').strip('\x00')
+                        elif isinstance(value, str):
+                            value = value.strip('\x00')
+                        
+                        if value:  # Only include non-empty values
+                            header_data[field] = str(value)
+                except Exception as e:
+                    print(f"    Warning: Could not extract {field}: {e}")
+            
+            # Additional header information that might be relevant
+            try:
+                # Get voxel sizes
+                header_data['pixdim'] = str(header.get_zooms())
+                # Get data type
+                header_data['datatype'] = str(header.get_data_dtype())
+                # Get image dimensions
+                header_data['dim'] = str(header.get_data_shape())
+                # Get qform and sform codes
+                header_data['qform_code'] = str(header.get_qform(coded=True)[1])
+                header_data['sform_code'] = str(header.get_sform(coded=True)[1])
+            except Exception as e:
+                print(f"    Warning: Could not extract additional header info: {e}")
+            
+            # Check for potentially identifying information in header fields
+            for field, value in header_data.items():
+                header_info_results.append({
+                    'field': field,
+                    'value': value
+                })
+                
+                # Check if this field might contain identifying information
+                if field in ['descrip', 'aux_file', 'intent_name', 'db_name'] and value:
+                    # Look for potentially identifying patterns
+                    identifying_patterns = ['patient', 'subject', 'name', 'id', 'date', 'time', 'hospital', 'clinic']
+                    if any(pattern.lower() in value.lower() for pattern in identifying_patterns):
+                        print(f"    WARNING: Header field '{field}' may contain identifying information: {value}")
+                        overall_found_issues = True
+                
         except Exception as e:
-            print(f"  ERROR: Could not read {json_file}: {e}")
+            print(f"    ERROR: Could not read NIfTI header for {nifti_file}: {e}")
+        
+        # Save JSON metadata results if any were found
+        if json_metadata_results:
+            overall_found_issues = True
+            
+            # Create DataFrame for JSON metadata results
+            df_json = pd.DataFrame(json_metadata_results)
+            
+            # Construct output filename for JSON metadata
+            output_parts = [f'sub-{subject_label}']
+            
+            if 'session' in filename_parts:
+                output_parts.append(f'ses-{filename_parts["session"]}')
+            
+            if 'run' in filename_parts:
+                output_parts.append(f'run-{filename_parts["run"]}')
+            
+            output_parts.append(modality)
+            output_parts.append('desc-jsoninfo.csv')
+            
+            csv_filename = '_'.join(output_parts)
+            csv_path = os.path.join(output_dir, csv_filename)
+            
+            # Save the JSON metadata results
+            df_json.to_csv(csv_path, index=False)
+            print(f'    JSON metadata results saved to: {csv_filename}')
+        
+        # Save header information results (always save, even if no identifying info found)
+        if header_info_results:
+            # Create DataFrame for header information
+            df_header = pd.DataFrame(header_info_results)
+            
+            # Construct output filename for header information
+            output_parts = [f'sub-{subject_label}']
+            
+            if 'session' in filename_parts:
+                output_parts.append(f'ses-{filename_parts["session"]}')
+            
+            if 'run' in filename_parts:
+                output_parts.append(f'run-{filename_parts["run"]}')
+            
+            output_parts.append(modality)
+            output_parts.append('desc-headerinfo.csv')
+            
+            header_csv_filename = '_'.join(output_parts)
+            header_csv_path = os.path.join(output_dir, header_csv_filename)
+            
+            # Save the header information results
+            df_header.to_csv(header_csv_path, index=False)
+            print(f'    Header information saved to: {header_csv_filename}')
+        
+        # Print summary for this file
+        if not json_metadata_results:
+            print(f'    SUCCESS: No identifying JSON metadata found in {basename}')
+        
+        print(f'    Header information extracted and saved for {basename}')
     
-    # Save results if any were found
-    if metadata_results:
-        # Create DataFrame for better organization
-        df = pd.DataFrame(metadata_results)
-        
-        # Create output directory in session-aware meta_data_info structure ONLY
-        if session is not None:
-            # Only save to session-specific directory when session exists
-            output_dir = os.path.join(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', f'ses-{session}', 'meta_data_info')
-            csv_filename = f'sub-{subject_label}_ses-{session}_metadata-check.csv'
-            print(f"DEBUG: Using session-aware metadata directory: {output_dir}")
-        else:
-            # Only save to subject-level directory when no session
-            output_dir = os.path.join(bids_dir, 'sourcedata', 'bidsonym', f'sub-{subject_label}', 'meta_data_info')
-            csv_filename = f'sub-{subject_label}_metadata-check.csv'
-            print(f"DEBUG: Using subject-level metadata directory: {output_dir}")
-        
-        # Ensure the meta_data_info directory exists
-        os.makedirs(output_dir, exist_ok=True)
-        
-        csv_path = os.path.join(output_dir, csv_filename)
-        df.to_csv(csv_path, index=False)
-        print(f'\nResults saved to: {csv_path}')
-        
+    # Print overall summary
+    if overall_found_issues:
+        print('\nWARNING: Found potentially identifying information!')
+        print(f'   Individual results saved to: {output_dir}')
+        print('   Please review the results and consider removing or anonymizing')
+        print('   the identified fields before sharing this data.')
         return True
-        
     else:
-        print('SUCCESS: No potentially identifying metadata fields found.')
+        print('\nSUCCESS: No potentially identifying metadata fields found in any files.')
+        print('   Header information has been extracted and saved for all files.')
+        print('   The checked files appear to be properly de-identified.')
         return False
 
 

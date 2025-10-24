@@ -143,25 +143,19 @@ def get_parser():
 def process_subject_session(args, layout, subject_label, session_label=None, log_print=print):
     """
     Process a single subject and session combination.
-    
-    Parameters
-    ----------
-    args : argparse.Namespace
-        Command line arguments.
-    layout : BIDSLayout
-        BIDS layout object.
-    subject_label : str
-        Subject label to process.
-    session_label : str, optional
-        Session label to process.
-    log_print : function, optional
-        Logging function to use for output.
     """
     
     log_print(
         f"Processing subject {subject_label}"
         + (f", session {session_label}" if session_label else "")
     )
+    
+    # Determine which modalities will be processed
+    processed_modalities = ['T1w']  # T1w is always processed
+    if args.deface_t2w:
+        processed_modalities.append('T2w')
+    if args.deface_flair:
+        processed_modalities.append('FLAIR')
     
     # Get T1w images for this subject/session
     if session_label:
@@ -221,13 +215,6 @@ def process_subject_session(args, layout, subject_label, session_label=None, log
                                                      subject_label, args.bids_dir, 
                                                      session=session_label)
         
-        # Check metadata for potentially identifying information
-        check_meta_data(args.bids_dir, subject_label, session=session_label)
-        
-        # Delete specified metadata fields if requested
-        if args.del_meta:
-            del_meta_data(args.bids_dir, subject_label, args.del_meta)
-        
         # Run the specified defacing algorithm
         if args.deid == "pydeface":
             run_pydeface(T1_file, T1_file)
@@ -249,6 +236,15 @@ def process_subject_session(args, layout, subject_label, session_label=None, log
     if args.deface_flair:
         process_additional_modality(args, layout, subject_label, 'FLAIR',
                                     session_label, log_print)
+    
+    # Check metadata for potentially identifying information
+    # Pass the modalities that were actually processed
+    check_meta_data(args.bids_dir, subject_label, 
+                    session=session_label, modalities=processed_modalities)
+    
+    # Delete specified metadata fields if requested
+    if args.del_meta:
+        del_meta_data(args.bids_dir, subject_label, args.del_meta)
 
 
 def process_additional_modality(args, layout, subject_label, modality,
@@ -734,4 +730,4 @@ def run_deid():
 
 
 if __name__ == "__main__":
-    run_deeid()
+    run_deid()
