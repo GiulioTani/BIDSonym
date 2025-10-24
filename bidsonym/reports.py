@@ -220,7 +220,7 @@ def plot_brainmask_overlay(bids_dir, subject_label, session=None, t2w=None):
             
             # Generate plots for each anatomical direction
             for i, direction in enumerate(['x', 'y', 'z']):
-                ax = fig.add_subplot(1, 3, i + 1)
+                ax = fig.add_subplot(3, 1, i + 1)
                 
                 # Find optimal slice positions for this direction
                 cuts = find_cut_slices(t1w, direction=direction, n_cuts=12)
@@ -526,24 +526,26 @@ def plot_defaced_comparison(image, mask, outfile, bids_dir=None):
         ax1 = fig.add_subplot(1, 2, 1)
         plot_anat(
             image, 
-            display_mode='x', 
+            display_mode='x',
             cut_coords=[middle_x_world],
             axes=ax1, 
-            title='Original', 
+            title='Original',
             annotate=False,
-            draw_cross=False
+            draw_cross=False,
+            colorbar=False
         )
         
         # Plot defaced image on the right (sagittal view at same middle slice)
         ax2 = fig.add_subplot(1, 2, 2)
         plot_anat(
             mask, 
-            display_mode='x', 
+            display_mode='x',
             cut_coords=[middle_x_world],
             axes=ax2, 
-            title='Defaced', 
+            title='Defaced',
             annotate=False,
-            draw_cross=False
+            draw_cross=False,
+            colorbar=False
         )
         
         # Add overall title with subject information
