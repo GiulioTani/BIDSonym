@@ -184,6 +184,8 @@ def process_subject_session(args, layout, subject_label, session_label=None, log
         
         # Copy original files with session awareness BEFORE defacing
         nondeid_image_path=copy_no_deid(args.bids_dir, subject_label, T1_file, session=session_label)
+        if os.path.exists(nondeid_image_path.replace('nii.gz', 'DONE')):
+            continue
         # Run brain extraction for quality control BEFORE defacing
         if args.brainextraction == 'bet':
             if args.bet_frac is None:
@@ -225,6 +227,7 @@ def process_subject_session(args, layout, subject_label, session_label=None, log
             run_mridefacer(nondeid_image_path, T1_file)
         elif args.deid == "deepdefacer":
             run_deepdefacer(T1_file, subject_label, args.bids_dir)
+        Path(nondeid_image_path.replace('nii.gz', 'DONE')).touch()
     
     # Process T2w images if requested
     if args.deface_t2w:
