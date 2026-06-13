@@ -154,8 +154,14 @@ def process_subject_session(args, layout, subject_label, session_label=None, log
     processed_modalities = ['T1w']  # T1w is always processed
     if args.deface_t2w:
         processed_modalities.append('T2w')
+    if "T2w" in args.modalities:
+        processed_modalities.append('T2w')
+        args.deface_t2w = True
     if args.deface_flair:
         processed_modalities.append('FLAIR')
+    if "FLAIR" in args.modalities:
+        processed_modalities.append('FLAIR')
+        args.deface_flair = True
     
     # Get T1w images for this subject/session
     if session_label:
